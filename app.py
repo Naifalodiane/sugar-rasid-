@@ -3,6 +3,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 import urllib.parse
+from streamlit_geolocation import streamlit_geolocation
 
 # إعدادات الصفحة
 st.set_page_config(
@@ -40,7 +41,7 @@ tab_main, tab_rasid_control, tab_rasid_stats = st.tabs([
 ])
 
 # ---------------------------------------------------------
-# التبويب الأول: تطبيق سند (رعاية الطوارئ، واتساب الحقيقي، المؤشرات)
+# التبويب الأول: تطبيق سند (رعاية الطوارئ، تحديد الموقع الحقيقي GPS، واتساب)
 # ---------------------------------------------------------
 with tab_main:
     st.header("لوحة المتابعة اليومية لكبار السن والرعاية الشاملة")
@@ -55,12 +56,29 @@ with tab_main:
     with col_s1:
         st.subheader("🚨 الطوارئ والسلامة")
         
-        # زر الفزعة الطارئة مع تفعيل ربط الواتساب الحقيقي
+        # أداة جلب الإحداثيات الحقيقية للجهاز (GPS)
+        st.markdown("📌 **تحديد الموقع الجغرافي الحالي:**")
+        loc = streamlit_geolocation()
+        
+        lat = loc.get('latitude') if loc else None
+        lon = loc.get('longitude') if loc else None
+        
+        if lat and lon:
+            st.success(موقعك الحالي مسجل بدقة: خط عرض {lat}، خط طول {lon})
+        else:
+            st.info("اضغط على السماح للمتصفح برؤية الموقع لتضمينه في نداء الطوارئ.")
+        
+        # زر الفزعة الطارئة مع دمج الإحداثيات الحقيقية في رسالة الواتساب
         if st.button("🚨 زر الفزعة الطارئة (SOS)", use_container_width=True):
-            st.error("🚨 تم إطلاق نداء الطوارئ! تم تجهيز رسالة التنبيه الفورية للموقع الحي وقراءات السكر.")
+            st.error("🚨 تم إطلاق نداء الطوارئ الحقيقي وتم التقاط الإحداثيات الجغرافية!")
             
-            # تجهيز رسالة الواتساب الفورية للإرسال التجريبي الحقيقي على جوالك
-            alert_text = "🚨 *نداء طوارئ عاجل من تطبيق سند* 🚨\nالوالد يحتاج إلى مساعدة فورية!\n📍 الموقع الحي: (تم رصد إحداثيات موقع المسن بنجاح)\n🩺 الحالة: تتطلب التدخل السريع."
+            # بناء رابط خريطة قوقل مباشر بالإحداثيات الحقيقية إن وجدت
+            if lat and lon:
+                location_str = f"https://maps.google.com/?q={lat},{lon}"
+            else:
+                location_str = "لم يتم تحديد الإحداثيات بدقة من المتصفح (افتراضي)"
+            
+            alert_text = f"🚨 *نداء طوارئ عاجل من تطبيق سند* 🚨\nالوالد يحتاج إلى مساعدة فورية!\n📍 رابط الموقع الحي عبر خرائط جوجل:\n{location_str}\n🩺 الحالة: تتطلب التدخل السريع."
             encoded_text = urllib.parse.quote(alert_text)
             whatsapp_url = f"https://wa.me/{target_phone}?text={encoded_text}"
             

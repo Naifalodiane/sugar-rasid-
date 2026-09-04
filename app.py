@@ -64,7 +64,8 @@ with tab_main:
         lon = loc.get('longitude') if loc else None
         
         if lat and lon:
-            st.success(موقعك الحالي مسجل بدقة: خط عرض {lat}، خط طول {lon})
+            st.success(f"موقعك الحالي مسجل بدقة: خط عرض {lat}، خط طول {lon}")
+
         else:
             st.info("اضغط على السماح للمتصفح برؤية الموقع لتضمينه في نداء الطوارئ.")
         

@@ -40,20 +40,23 @@ st.info(
 st.title("🛡️ نظام «سند» المتكامل - رعاية كبار السن والسكر الذكي")
 st.markdown("منصة رقمية موحدة تجمع بين رعاية السلامة والطارئ (سند) والرصد الذكي لقراءات السكر (سكر راصد).")
 
-# تهيئة الذاكرة للجلسة
+# تهيئة الذاكرة للجلسة (محاولة تحميل السجلات السابقة إن وجدت)
 if "logs" not in st.session_state:
-    st.session_state.logs = pd.DataFrame(
-        columns=[
-            "رقم الاختبار",
-            "قراءة السكر (mg/dL)",
-            "الحالة الفعلية (المرجعية)",
-            "تصنيف النظام",
-            "هل تم إرسال تنبيه؟",
-            "وقت معالجة القراءة",
-            "زمن إرسال التنبيه (مللي ثانية)",
-            "دقة التصنيف",
-        ]
-    )
+    try:
+        st.session_state.logs = pd.read_csv("shared_data.csv")
+    except:
+        st.session_state.logs = pd.DataFrame(
+            columns=[
+                "رقم الاختبار",
+                "قراءة السكر (mg/dL)",
+                "الحالة الفعلية (المرجعية)",
+                "تصنيف النظام",
+                "هل تم إرسال تنبيه؟",
+                "وقت معالجة القراءة",
+                "زمن إرسال التنبيه (مللي ثانية)",
+                "دقة التصنيف",
+            ]
+        )
 
 # ---------------------------------------------------------
 # إعدادات النظام في الشريط الجانبي
@@ -215,6 +218,10 @@ with st.container():
             st.session_state.logs = pd.concat(
                 [st.session_state.logs, pd.DataFrame([new_row])], ignore_index=True
             )
+            
+            # حفظ السجلات تلقائياً في الملف المشترك لتطبيق الابن
+            st.session_state.logs.to_csv("shared_data.csv", index=False)
+            
             st.rerun()
 
     else:
@@ -265,12 +272,18 @@ with st.container():
             st.session_state.logs = pd.concat(
                 [st.session_state.logs, df_sim], ignore_index=True
             )
+            
+            # حفظ السجلات تلقائياً في الملف المشترك لتطبيق الابن
+            st.session_state.logs.to_csv("shared_data.csv", index=False)
+            
             st.rerun()
 
 # زر مسح السجلات
 if not st.session_state.logs.empty:
     if st.button("🗑️ مسح جميع السجلات وإعادة ضبط الحالة"):
         st.session_state.logs = pd.DataFrame(columns=st.session_state.logs.columns)
+        # تحديث الملف المشترك ليصبح فارغاً أو إعادة ضبط
+        st.session_state.logs.to_csv("shared_data.csv", index=False)
         st.rerun()
 
 

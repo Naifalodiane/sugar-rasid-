@@ -2,14 +2,12 @@ import time
 from datetime import datetime
 import pandas as pd
 import streamlit as st
-import base64
-import requests
 import urllib.parse
 
 st.set_page_config(page_title="تطبيق الأب - سكر راصد", layout="wide")
 
 st.title("🛡️ نظام «سند» - تطبيق الأب")
-st.markdown("لوحة تسجيل البيانات الخاصة بالأب وإرسالها سحابياً للابن والمتابعة الفورية.")
+st.markdown("لوحة تسجيل البيانات الخاصة بالأب وإرسالها ومتابعة القراءات الحيوية.")
 
 # إعدادات الأب وثوابت النظام
 father_phone = "0509036511"
@@ -26,9 +24,7 @@ if "logs" not in st.session_state:
         ]
     )
 
-st.sidebar.subheader("⚙️ إعدادات الرفع السحابي")
-github_token = st.sidebar.text_input("GitHub Token", type="password", value="")
-repo_name = st.sidebar.text_input("اسم المستودع", value="Naifalodiane/sugar-rasid-")
+st.sidebar.subheader("⚙️ إعدادات الطوارئ")
 target_phone = st.sidebar.text_input("رقم الطوارئ للابن", value="966500000000")
 
 st.sidebar.markdown("---")
@@ -45,7 +41,7 @@ def classify_sugar(value):
 manual_val = st.number_input("قراءة سكر الدم (mg/dL)", min_value=20, max_value=600, value=120)
 true_state_manual = st.selectbox("الحالة الفعلية", ["انخفاض", "طبيعي", "ارتفاع"])
 
-if st.button("معالجة وتسجيل ونشر القراءة فوراً", use_container_width=True):
+if st.button("معالجة وتسجيل القراءة فوراً", use_container_width=True):
     system_classification = classify_sugar(manual_val)
     alert_sent = "نعم" if system_classification != "طبيعي" else "لا"
     
@@ -62,7 +58,7 @@ if st.button("معالجة وتسجيل ونشر القراءة فوراً", use
     
     st.session_state.logs = pd.concat([st.session_state.logs, pd.DataFrame([new_row])], ignore_index=True)
     
-    # تنبيهات الطوارئ الفورية في شاشة الأب إذا كانت القراءة حرجة
+    # تنبيهات الطوارئ الفورية إذا كانت القراءة غير طبيعية
     if system_classification != "طبيعي":
         auto_alert_text = f"🚨 *تنبيه طوارئ من تطبيق الأب* 🚨\nالقراءة المسجلة: {manual_val} mg/dL ({system_classification}).\n📍 الموقع: {location_str}"
         encoded_auto = urllib.parse.quote(auto_alert_text)
@@ -76,37 +72,8 @@ if st.button("معالجة وتسجيل ونشر القراءة فوراً", use
                 </a>
             </div>
         """, unsafe_allow_html=True)
-
-    # الرفع السحابي التلقائي
-    if github_token:
-        try:
-            csv_content = st.session_state.logs.to_csv(index=False)
-            encoded_content = base64.b64encode(csv_content.encode('utf-8')).decode('utf-8')
-            url = f"https://api.github.com/repos/{repo_name}/contents/shared_data.csv"
-            headers = {
-                "Authorization": f"Bearer {github_token}",
-                "Accept": "application/vnd.github+json"
-            }
-            
-            get_res = requests.get(url, headers=headers)
-            sha = get_res.json().get("sha") if get_res.status_code == 200 else None
-            
-            data = {
-                "message": "Auto update shared_data.csv with father app",
-                "content": encoded_content
-            }
-            if sha:
-                data["sha"] = sha
-                
-            put_res = requests.put(url, headers=headers, json=data)
-            if put_res.status_code in [200, 201]:
-                st.success("🚀 تم الرفع للسحابة بنجاح تام وتحديث بيانات الابن!")
-            else:
-                st.error(f"خطأ في الرفع: {put_res.status_code} - {put_res.json().get('message', put_res.text)}")
-        except Exception as e:
-            st.error(f"خطأ استثنائي: {e}")
     else:
-        st.warning("⚠️ يرجى إدخال الرمز (GitHub Token) في الشريط الجانبي.")
+        st.success("✅ تمت معالجة وتسجيل القراءة بنجاح (الحالة طبيعية).")
 
 st.markdown("### السجل الحالي:")
 st.dataframe(st.session_state.logs, use_container_width=True)

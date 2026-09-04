@@ -6,11 +6,34 @@ import urllib.parse
 
 # إعدادات الصفحة والتصميم
 st.set_page_config(
-    page_title="تطبيق سند والنظام الذكي لسكر راصد", page_icon="🛡️", layout="wide"
+    page_title="تطبيق سند والنظام الذكي لسكر راصد", 
+    page_icon="🛡️", 
+    layout="wide"
 )
 
-# تنبيه إخلاء مسؤولية بحثي
-st.warning(
+# تخصيص التصميم العام عبر CSS لجمالية الواجهة الطبية
+st.markdown("""
+    <style>
+    .main {
+        background-color: #f8f9fa;
+    }
+    .stButton>button {
+        border-radius: 8px;
+        font-weight: bold;
+    }
+    .card {
+        background-color: white;
+        padding: 20px;
+        border-radius: 12px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+        margin-bottom: 20px;
+        border: 1px solid #eef0f2;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# تنبيه إخلاء مسؤولية بحثي بتصميم أنيق
+st.info(
     "⚠️ **إخلاء مسؤولية بحثي:** نظام رصد السكر هو نموذج أولي بحثي فقط (Research Prototype) وليس جهازاً طبياً معتمداً، والهدف منه قياس كفاءة خوارزميات التنبيه ضمن منصة سند الشاملة."
 )
 
@@ -33,10 +56,10 @@ if "logs" not in st.session_state:
     )
 
 # ---------------------------------------------------------
-# إعدادات النظام في الشريط الجانبي (رقم الواتساب، رقم الابن للاتصال، والموقع الثابت)
+# إعدادات النظام في الشريط الجانبي
 # ---------------------------------------------------------
 st.sidebar.markdown("---")
-st.sidebar.subheader("📱 إعدادات نظام سند (تشغيل 24/7)")
+st.sidebar.subheader("⚙️ إعدادات النظام (تشغيل 24/7)")
 
 target_phone = st.sidebar.text_input(
     "رقم جوال الطوارئ للواتساب (مع مفتاح الدولة)", 
@@ -76,164 +99,175 @@ if not df_check.empty:
 location_str = f"https://maps.google.com/?q={default_lat},{default_lon}"
 
 # ---------------------------------------------------------
-# لوحة الطوارئ الذكية (تظهر تلقائياً في الأعلى وتأخذ الأولوية القصوى عند الخطر)
+# لوحة الطوارئ الذكية (تظهر تلقائياً في الأعلى عند الخطر)
 # ---------------------------------------------------------
 if latest_val is not None and latest_status != "طبيعي":
     st.markdown("---")
-    st.error(f"🚨 **تنبيه طارئ فوري! الحالة خطيرة وتتطلب تدخلاً عاجلاً!** (آخر قراءة: {latest_val} mg/dL - {latest_status})")
-    
     auto_alert_text = f"🚨 *نداء طوارئ آلي 24/7 من نظام سند وسكر راصد* 🚨\nخطر! سكر الدم وصل إلى: {latest_val} mg/dL ({latest_status}).\n📍 الموقع المسجل للمسن:\n{location_str}\nالرجاء التدخل والمباشرة فوراً!"
     encoded_auto = urllib.parse.quote(auto_alert_text)
     auto_whatsapp_url = f"https://wa.me/{target_phone}?text={encoded_auto}"
     
-    # واجهة تنبيه ضخمة وبارزة جداً لا يمكن تجاهلها
     st.markdown(f"""
-        <div style="background-color:#ffe6e6; padding:20px; border-radius:12px; border:3px solid #ff4d4d; text-align:center; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-            <h2 style="color:#cc0000; margin-top:0;">⚠️ تم تحويل النظام تلقائياً لوضع الطوارئ القصوى!</h2>
-            <p style="font-size:18px; color:#333;">السكر وصل إلى معدل حرج ({latest_val} mg/dL). اضغط الزر أدناه لفتح الواتساب وإرسال نداء الفزعة مع الإحداثيات فوراً:</p>
-            <a href="{auto_whatsapp_url}" target="_blank" style="background-color:#25D366; color:white; padding:15px 30px; text-decoration:none; font-size:20px; font-weight:bold; border-radius:10px; display:inline-block; margin-top:10px;">
-                💬 إرسال رسالة الواتساب الطارئة الآن
+        <div style="background-color:#fff5f5; padding:25px; border-radius:15px; border:2px solid #ff4d4d; text-align:center; box-shadow: 0 6px 12px rgba(255,77,77,0.15); margin-bottom: 25px;">
+            <h2 style="color:#cc0000; margin-top:0;">🚨 تحويل تلقائي لوضع الطوارئ القصوى!</h2>
+            <p style="font-size:18px; color:#333; margin-bottom: 15px;">رصد قراءة حرجة لسكر الدم: <b>{latest_val} mg/dL ({latest_status})</b>. يرجى سرعة التواصل وإرسال النداء الفوري:</p>
+            <a href="{auto_whatsapp_url}" target="_blank" style="background-color:#25D366; color:white; padding:14px 28px; text-decoration:none; font-size:18px; font-weight:bold; border-radius:10px; display:inline-block; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+                💬 إرسال رسالة الطوارئ عبر الواتساب فوراً
             </a>
         </div>
     """, unsafe_allow_html=True)
-    st.markdown("---")
 
-# تقسيم الشاشة إلى أقسام واضحة ومتسلسلة
+# ---------------------------------------------------------
+# الواجهة الرئيسية (تقسيم منظم وعصري)
+# ---------------------------------------------------------
 col_main1, col_main2 = st.columns(2)
 
 with col_main1:
-    st.subheader("🚨 حالة السلامة والمؤشرات الحية")
+    st.markdown("""
+        <div class="card">
+            <h3 style="color:#1f77b4; margin-top:0;">📊 المؤشرات الحية والسلامة</h3>
+    """, unsafe_allow_html=True)
+    
     if latest_val is None or latest_status == "طبيعي":
-        st.success("✅ الحالة العامة مستقرة والمؤشرات ضمن المعدل الطبيعي (النظام يعمل على مدار 24 ساعة).")
+        st.success("✅ الحالة العامة مستقرة والمؤشرات ضمن المعدل الطبيعي (نشط 24/7).")
     else:
-        st.warning("⚠️ النظام في وضع الطوارئ حالياً بسبب القراءة الحرجة المسجلة بالأعلى.")
+        st.warning("⚠️ التنبيه النشط: النظام مسجل لحالة حرجة حالياً.")
         
-    st.metric(label="نبضات القلب", value="78 نبضة/دقيقة", delta="مستقر")
-    st.metric(label="أكسجين الدم (SpO2)", value="98%", delta="طبيعي")
+    m1, m2 = st.columns(2)
+    m1.metric(label="نبضات القلب", value="78 bpm", delta="مستقر")
+    m2.metric(label="أكسجين الدم (SpO2)", value="98%", delta="طبيعي")
+    
+    st.markdown("</div>", unsafe_allow_html=True)
 
 with col_main2:
-    st.subheader("💊 المواعيد والأدوية اليومية")
+    st.markdown("""
+        <div class="card">
+            <h3 style="color:#1f77b4; margin-top:0;">💊 الخطة العلاجية والاتصال السريع</h3>
+    """, unsafe_allow_html=True)
+    
     st.markdown("- **دواء الضغط ومنظم السكر:** الساعة 10:00 صباحاً (✅ تم الالتزام)")
     st.markdown("- **جرعة الإنسولين المسائية:** الساعة 8:00 مساءً (⏳ في الانتظار)")
     
-    # زر الاتصال الهاتفي الحقيقي المربوط برقم الابن
     call_url = f"tel:{son_phone}"
     st.markdown(f"""
-        <a href="{call_url}" style="background-color:#0066cc; color:white; padding:12px 20px; text-decoration:none; font-size:16px; font-weight:bold; border-radius:8px; display:block; text-align:center; margin-top:15px;">
-            📞 الاتصال السريع بالابن / المسؤول الموثوق ({son_phone})
-        </a>
+        <div style="margin-top: 20px;">
+            <a href="{call_url}" style="background-color:#0066cc; color:white; padding:12px 20px; text-decoration:none; font-size:16px; font-weight:bold; border-radius:8px; display:block; text-align:center;">
+                📞 الاتصال السريع بالابن / المسؤول ({son_phone})
+            </a>
+        </div>
     """, unsafe_allow_html=True)
+    
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------
 # لوحة تحكم وإدخال قراءات سكر راصد
 # ---------------------------------------------------------
 st.markdown("---")
-st.header("⚙️ لوحة تحكم وإدخال قراءات سكر راصد")
+st.markdown("### ⚙️ لوحة التحكم ومحاكاة قراءات (سكر راصد)")
 
-input_mode = st.radio(
-    "اختر طريقة الإدخال:", ["إدخال يدوي لقراءة", "محاكاة دفعة اختبارات (100+)"]
-)
-
-if input_mode == "إدخال يدوي لقراءة":
-    col_i1, col_i2 = st.columns(2)
-    with col_i1:
-        manual_val = st.number_input(
-            "قراءة سكر الدم (mg/dL)", min_value=20, max_value=600, value=50
-        )
-    with col_i2:
-        true_state_manual = st.selectbox(
-            "الحالة الفعلية للمريض (Ground Truth للبحث)",
-            ["انخفاض", "طبيعي", "ارتفاع"],
-        )
-
-    if st.button("معالجة القراءة وتسجيلها"):
-        start_time = time.time()
-        time.sleep(0.05)
-        processing_time = round((time.time() - start_time) * 1000, 2)
-
-        system_classification = classify_sugar(manual_val)
-        alert_sent = "نعم" if system_classification != "طبيعي" else "لا"
-
-        alert_time = (
-            round(processing_time + 15, 2) if alert_sent == "نعم" else 0.0
-        )
-        is_correct = (
-            "صحيح" if system_classification == true_state_manual else "خاطئ"
-        )
-
-        new_id = len(st.session_state.logs) + 1
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        new_row = {
-            "رقم الاختبار": f"TEST-{new_id:03d}",
-            "قراءة السكر (mg/dL)": manual_val,
-            "الحالة الفعلية (المرجعية)": true_state_manual,
-            "تصنيف النظام": system_classification,
-            "هل تم إرسال تنبيه؟": alert_sent,
-            "وقت معالجة القراءة": timestamp,
-            "زمن إرسال التنبيه (مللي ثانية)": alert_time,
-            "دقة التصنيف": is_correct,
-        }
-
-        st.session_state.logs = pd.concat(
-            [st.session_state.logs, pd.DataFrame([new_row])], ignore_index=True
-        )
-        
-        # إعادة تحميل الصفحة تلقائياً لتظهر لوحة الطوارئ فوراً في أعلى الشاشة
-        st.rerun()
-
-else:
-    num_tests = st.slider(
-        "عدد الاختبارات المراد محاكاتها", min_value=10, max_value=500, value=100
+with st.container():
+    input_mode = st.radio(
+        "اختر طريقة الإدخال:", ["إدخال يدوي لقراءة", "محاكاة دفعة اختبارات (100+)"], horizontal=True
     )
 
-    if st.button("بدء المحاكاة وتوليد السجل"):
-        import random
-
-        simulated_data = []
-        start_id = len(st.session_state.logs) + 1
-
-        for i in range(num_tests):
-            val = random.choice(
-                [
-                    random.randint(40, 74),
-                    random.randint(76, 175),
-                    random.randint(185, 350),
-                ]
+    if input_mode == "إدخال يدوي لقراءة":
+        col_i1, col_i2 = st.columns(2)
+        with col_i1:
+            manual_val = st.number_input(
+                "قراءة سكر الدم (mg/dL)", min_value=20, max_value=600, value=50
             )
-            true_state = classify_sugar(val)
-
-            start_t = time.time()
-            system_class = classify_sugar(val)
-            proc_t = round((time.time() - start_t) * 1000 + random.uniform(10, 30), 2)
-
-            alert = "نعم" if system_class != "طبيعي" else "لا"
-            alert_t = round(proc_t + random.uniform(5, 15), 2) if alert == "نعم" else 0.0
-            correct = "صحيح" if system_class == true_state else "خاطئ"
-
-            simulated_data.append(
-                {
-                    "رقم الاختبار": f"TEST-{start_id + i:03d}",
-                    "قراءة السكر (mg/dL)": val,
-                    "الحالة الفعلية (المرجعية)": true_state,
-                    "تصنيف النظام": system_class,
-                    "هل تم إرسال تنبيه؟": alert,
-                    "وقت معالجة القراءة": datetime.now().strftime(
-                        "%Y-%m-%d %H:%M:%S"
-                    ),
-                    "زمن إرسال التنبيه (مللي ثانية)": alert_t,
-                    "دقة التصنيف": correct,
-                }
+        with col_i2:
+            true_state_manual = st.selectbox(
+                "الحالة الفعلية للمريض (Ground Truth للبحث)",
+                ["انخفاض", "طبيعي", "ارتفاع"],
             )
 
-        df_sim = pd.DataFrame(simulated_data)
-        st.session_state.logs = pd.concat(
-            [st.session_state.logs, df_sim], ignore_index=True
+        if st.button("معالجة القراءة وتسجيلها في النظام", use_container_width=True):
+            start_time = time.time()
+            time.sleep(0.05)
+            processing_time = round((time.time() - start_time) * 1000, 2)
+
+            system_classification = classify_sugar(manual_val)
+            alert_sent = "نعم" if system_classification != "طبيعي" else "لا"
+
+            alert_time = (
+                round(processing_time + 15, 2) if alert_sent == "نعم" else 0.0
+            )
+            is_correct = (
+                "صحيح" if system_classification == true_state_manual else "خاطئ"
+            )
+
+            new_id = len(st.session_state.logs) + 1
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            new_row = {
+                "رقم الاختبار": f"TEST-{new_id:03d}",
+                "قراءة السكر (mg/dL)": manual_val,
+                "الحالة الفعلية (المرجعية)": true_state_manual,
+                "تصنيف النظام": system_classification,
+                "هل تم إرسال تنبيه؟": alert_sent,
+                "وقت معالجة القراءة": timestamp,
+                "زمن إرسال التنبيه (مللي ثانية)": alert_time,
+                "دقة التصنيف": is_correct,
+            }
+
+            st.session_state.logs = pd.concat(
+                [st.session_state.logs, pd.DataFrame([new_row])], ignore_index=True
+            )
+            st.rerun()
+
+    else:
+        num_tests = st.slider(
+            "عدد الاختبارات المراد محاكاتها", min_value=10, max_value=500, value=100
         )
-        st.rerun()
 
-# زر تفريغ السجلات
+        if st.button("بدء المحاكاة وتوليد السجل البحثي", use_container_width=True):
+            import random
+
+            simulated_data = []
+            start_id = len(st.session_state.logs) + 1
+
+            for i in range(num_tests):
+                val = random.choice(
+                    [
+                        random.randint(40, 74),
+                        random.randint(76, 175),
+                        random.randint(185, 350),
+                    ]
+                )
+                true_state = classify_sugar(val)
+
+                start_t = time.time()
+                system_class = classify_sugar(val)
+                proc_t = round((time.time() - start_t) * 1000 + random.uniform(10, 30), 2)
+
+                alert = "نعم" if system_class != "طبيعي" else "لا"
+                alert_t = round(proc_t + random.uniform(5, 15), 2) if alert == "نعم" else 0.0
+                correct = "صحيح" if system_class == true_state else "خاطئ"
+
+                simulated_data.append(
+                    {
+                        "رقم الاختبار": f"TEST-{start_id + i:03d}",
+                        "قراءة السكر (mg/dL)": val,
+                        "الحالة الفعلية (المرجعية)": true_state,
+                        "تصنيف النظام": system_class,
+                        "هل تم إرسال تنبيه؟": alert,
+                        "وقت معالجة القراءة": datetime.now().strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        ),
+                        "زمن إرسال التنبيه (مللي ثانية)": alert_t,
+                        "دقة التصنيف": correct,
+                    }
+                )
+
+            df_sim = pd.DataFrame(simulated_data)
+            st.session_state.logs = pd.concat(
+                [st.session_state.logs, df_sim], ignore_index=True
+            )
+            st.rerun()
+
+# زر مسح السجلات
 if not st.session_state.logs.empty:
     if st.button("🗑️ مسح جميع السجلات وإعادة ضبط الحالة"):
         st.session_state.logs = pd.DataFrame(columns=st.session_state.logs.columns)
@@ -241,10 +275,10 @@ if not st.session_state.logs.empty:
 
 
 # ---------------------------------------------------------
-# لوحة المؤشرات والإحصائيات البحثية
+# لوحة المؤشرات والإحصائيات والتوثيق البحثي
 # ---------------------------------------------------------
 st.markdown("---")
-st.header("📊 لوحة المؤشرات والإحصائيات والتوثيق البحثي")
+st.markdown("### 📊 لوحة المؤشرات والإحصائيات والتوثيق البحثي")
 
 df = st.session_state.logs
 
@@ -282,7 +316,7 @@ if not df.empty:
 
     st.markdown("---")
 
-    st.subheader("📋 سجل الاختبارات التفصيلي")
+    st.markdown("##### 📋 سجل الاختبارات التفصيلي")
     st.dataframe(df, use_container_width=True)
 
     csv = df.to_csv(index=False).encode("utf-8-sig")
@@ -291,7 +325,8 @@ if not df.empty:
         data=csv,
         file_name="sanad_sugar_research_logs.csv",
         mime="text/csv",
+        use_container_width=True
     )
 
 else:
-    st.info("لا توجد بيانات مسجلة حتى الآن. استخدم خيار الإدخال اليدوي أو المحاكاة بالأعلى لبدء الفحص.")
+    st.info("لا توجد بيانات مسجلة حتى الآن. استخدم خيار الإدخال اليدوي أو المحاكاة بالأعلى لبدء الفحص وإظهار التحليلات.")

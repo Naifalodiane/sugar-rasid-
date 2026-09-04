@@ -33,13 +33,19 @@ if "logs" not in st.session_state:
     )
 
 # ---------------------------------------------------------
-# إعدادات النظام في الشريط الجانبي (رقم الجوال والموقع الثابت 24/7)
+# إعدادات النظام في الشريط الجانبي (رقم الواتساب، رقم الابن للاتصال، والموقع الثابت)
 # ---------------------------------------------------------
 st.sidebar.markdown("---")
 st.sidebar.subheader("📱 إعدادات نظام سند (تشغيل 24/7)")
+
 target_phone = st.sidebar.text_input(
-    "رقم جوال الطوارئ الموحد (مع مفتاح الدولة)", 
+    "رقم جوال الطوارئ للواتساب (مع مفتاح الدولة)", 
     value="966500000000"
+)
+
+son_phone = st.sidebar.text_input(
+    "رقم جوال الابن للاتصال السريع", 
+    value="0509036511"
 )
 
 st.sidebar.markdown("📌 **الموقع الثابت للطوارئ (الدوادمي):**")
@@ -92,7 +98,7 @@ if latest_val is not None and latest_status != "طبيعي":
     """, unsafe_allow_html=True)
     st.markdown("---")
 
-# تقسيم الشاشة إلى أقسام واضحة ومتسلسلة بدلاً من التبويبات المزعجة
+# تقسيم الشاشة إلى أقسام واضحة ومتسلسلة
 col_main1, col_main2 = st.columns(2)
 
 with col_main1:
@@ -109,8 +115,14 @@ with col_main2:
     st.subheader("💊 المواعيد والأدوية اليومية")
     st.markdown("- **دواء الضغط ومنظم السكر:** الساعة 10:00 صباحاً (✅ تم الالتزام)")
     st.markdown("- **جرعة الإنسولين المسائية:** الساعة 8:00 مساءً (⏳ في الانتظار)")
-    if st.button("📞 الاتصال السريع بالابن / المسؤول الموثوق", use_container_width=True):
-        st.success("📞 جاري توجيه الاتصال بالمسؤول...")
+    
+    # زر الاتصال الهاتفي الحقيقي المربوط برقم الابن
+    call_url = f"tel:{son_phone}"
+    st.markdown(f"""
+        <a href="{call_url}" style="background-color:#0066cc; color:white; padding:12px 20px; text-decoration:none; font-size:16px; font-weight:bold; border-radius:8px; display:block; text-align:center; margin-top:15px;">
+            📞 الاتصال السريع بالابن / المسؤول الموثوق ({son_phone})
+        </a>
+    """, unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------

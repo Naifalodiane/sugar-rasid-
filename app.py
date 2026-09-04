@@ -2,6 +2,7 @@ import time
 from datetime import datetime
 import pandas as pd
 import streamlit as st
+import urllib.parse
 
 # إعدادات الصفحة
 st.set_page_config(
@@ -39,20 +40,35 @@ tab_main, tab_rasid_control, tab_rasid_stats = st.tabs([
 ])
 
 # ---------------------------------------------------------
-# التبويب الأول: تطبيق سند (رعاية الطوارئ، الاتصال، المؤشرات)
+# التبويب الأول: تطبيق سند (رعاية الطوارئ، واتساب الحقيقي، المؤشرات)
 # ---------------------------------------------------------
 with tab_main:
     st.header("لوحة المتابعة اليومية لكبار السن والرعاية الشاملة")
+    
+    # إعداد رقم جوال المستلم للتنبيهات الحقيقية في الشريط الجانبي
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📱 إعدادات تنبيهات الطوارئ (سند)")
+    target_phone = st.sidebar.text_input("رقم جوال الطوارئ (مع مفتاح الدولة، مثل 9665xxxxxxxx)", value="966500000000")
     
     col_s1, col_s2 = st.columns(2)
     
     with col_s1:
         st.subheader("🚨 الطوارئ والسلامة")
+        
+        # زر الفزعة الطارئة مع تفعيل ربط الواتساب الحقيقي
         if st.button("🚨 زر الفزعة الطارئة (SOS)", use_container_width=True):
-            st.error("🚨 تم إطلاق نداء الطوارئ بنجاح! جاري إرسال الموقع الحي (GPS) وأحدث قراءات السكر لعائلة المسن والهلال الأحمر.")
+            st.error("🚨 تم إطلاق نداء الطوارئ! تم تجهيز رسالة التنبيه الفورية للموقع الحي وقراءات السكر.")
+            
+            # تجهيز رسالة الواتساب الفورية للإرسال التجريبي الحقيقي على جوالك
+            alert_text = "🚨 *نداء طوارئ عاجل من تطبيق سند* 🚨\nالوالد يحتاج إلى مساعدة فورية!\n📍 الموقع الحي: (تم رصد إحداثيات موقع المسن بنجاح)\n🩺 الحالة: تتطلب التدخل السريع."
+            encoded_text = urllib.parse.quote(alert_text)
+            whatsapp_url = f"https://wa.me/{target_phone}?text={encoded_text}"
+            
+            # عرض رابط تفعيلي مباشر للواتساب
+            st.markdown(f"👉 **[اضغط هنا لإرسال رسالة الطوارئ الفورية عبر الواتساب لجوالك]({whatsapp_url})**", unsafe_allow_html=True)
             
         if st.button("📞 الاتصال السريع بالابن / المسؤول الموثوق", use_container_width=True):
-            st.success("📞 جاري الاتصال الآن بالمسؤول...")
+            st.success("📞 جاري توجيه الاتصال بالمسؤول...")
 
     with col_s2:
         st.subheader("❤️ المؤشرات الحيوية المباشرة")

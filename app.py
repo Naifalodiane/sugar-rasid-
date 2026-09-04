@@ -5,16 +5,16 @@ import streamlit as st
 
 # إعدادات الصفحة
 st.set_page_config(
-    page_title="سكر راصد | نموذج أولي بحثي", page_icon="🩺", layout="wide"
+    page_title="تطبيق سند والنظام الذكي لسكر راصد", page_icon="🛡️", layout="wide"
 )
 
 # تنبيه إخلاء مسؤولية بحثي
 st.warning(
-    "⚠️ **إخلاء مسؤولية بحثي:** هذا النظام هو نموذج أولي بحثي فقط (Research Prototype) وليس جهازاً طبياً معتمداً أو نظام تشخيص، والهدف منه قياس كفاءة خوارزميات التنبيه."
+    "⚠️ **إخلاء مسؤولية بحثي:** نظام رصد السكر هو نموذج أولي بحثي فقط (Research Prototype) وليس جهازاً طبياً معتمداً، والهدف منه قياس كفاءة خوارزميات التنبيه ضمن منصة سند الشاملة."
 )
 
-st.title("🩺 نظام «سكر راصد» للبحث العلمي")
-st.markdown("اختبار فعالية النظام الذكي في اكتشاف قراءات سكر الدم وإرسال التنبيهات.")
+st.title("🛡️ نظام «سند» المتكامل - رعاية كبار السن والسكر الذكي")
+st.markdown("منصة رقمية موحدة تجمع بين رعاية السلامة والطارئ (سند) والرصد الذكي لقراءات السكر (سكر راصد).")
 
 # تهيئة جدول البيانات في ذاكرة الجلسة
 if "logs" not in st.session_state:
@@ -31,12 +31,39 @@ if "logs" not in st.session_state:
         ]
     )
 
-# الشريط الجانبي للتحكم وإدخال البيانات
-st.sidebar.header("⚙️ لوحة التحكم وإدخال البيانات")
+# تصميم التبويبات الرئيسية لدمج المشروعين
+tab_main, tab_rasid_control, tab_rasid_stats = st.tabs([
+    "🚨 لوحة طوارئ ورعاية سند", 
+    "⚙️ لوحة تحكم وإدخال سكر راصد", 
+    "📊 المؤشرات والإحصائيات البحثية"
+])
 
-tab_choice = st.sidebar.radio(
-    "اختر طريقة الإدخال:", ["إدخال يدوي لقراءة", "محاكاة دفعة اختبارات (100+)"]
-)
+# ---------------------------------------------------------
+# التبويب الأول: تطبيق سند (رعاية الطوارئ، الاتصال، المؤشرات)
+# ---------------------------------------------------------
+with tab_main:
+    st.header("لوحة المتابعة اليومية لكبار السن والرعاية الشاملة")
+    
+    col_s1, col_s2 = st.columns(2)
+    
+    with col_s1:
+        st.subheader("🚨 الطوارئ والسلامة")
+        if st.button("🚨 زر الفزعة الطارئة (SOS)", use_container_width=True):
+            st.error("🚨 تم إطلاق نداء الطوارئ بنجاح! جاري إرسال الموقع الحي (GPS) وأحدث قراءات السكر لعائلة المسن والهلال الأحمر.")
+            
+        if st.button("📞 الاتصال السريع بالابن / المسؤول الموثوق", use_container_width=True):
+            st.success("📞 جاري الاتصال الآن بالمسؤول...")
+
+    with col_s2:
+        st.subheader("❤️ المؤشرات الحيوية المباشرة")
+        st.metric(label="نبضات القلب", value="78 نبضة/دقيقة", delta="مستقر")
+        st.metric(label="أكسجين الدم (SpO2)", value="98%", delta="طبيعي")
+
+    st.markdown("---")
+    st.subheader("💊 جدول الأدوية والمواعيد اليومية")
+    st.markdown("- **دواء الضغط ومنظم السكر:** الساعة 10:00 صباحاً (✅ تم الالتزام)")
+    st.markdown("- **جرعة الإنسولين المسائية:** الساعة 8:00 مساءً (⏳ في الانتظار)")
+
 
 # المعايير الطبية القياسية للبحث (للتصنيف)
 def classify_sugar(value):
@@ -48,168 +75,172 @@ def classify_sugar(value):
         return "ارتفاع"
 
 
-if tab_choice == "إدخال يدوي لقراءة":
-    st.sidebar.subheader("إدخال قراءة جديدة")
-    manual_val = st.sidebar.number_input(
-        "قراءة سكر الدم (mg/dL)", min_value=20, max_value=600, value=110
-    )
-    true_state_manual = st.sidebar.selectbox(
-        "الحالة الفعلية للمريض (Ground Truth للبحث)",
-        ["طبيعي", "انخفاض", "ارتفاع"],
-    )
-
-    if st.sidebar.button("معالجة القراءة وتسجيلها"):
-        start_time = time.time()
-        # محاكاة وقت معالجة النظام السريع
-        time.sleep(0.05)
-        processing_time = round((time.time() - start_time) * 1000, 2)
-
-        system_classification = classify_sugar(manual_val)
-        alert_sent = "نعم" if system_classification != "طبيعي" else "لا"
-
-        alert_time = (
-            round(processing_time + 15, 2) if alert_sent == "نعم" else 0.0
-        )
-        is_correct = (
-            "صحيح" if system_classification == true_state_manual else "خاطئ"
-        )
-
-        new_id = (
-            len(st.session_state.logs) + 1
-        )
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        new_row = {
-            "رقم الاختبار": f"TEST-{new_id:03d}",
-            "قراءة السكر (mg/dL)": manual_val,
-            "الحالة الفعلية (المرجعية)": true_state_manual,
-            "تصنيف النظام": system_classification,
-            "هل تم إرسال تنبيه؟": alert_sent,
-            "وقت معالجة القراءة": timestamp,
-            "زمن إرسال التنبيه (مللي ثانية)": alert_time,
-            "دقة التصنيف": is_correct,
-        }
-
-        st.session_state.logs = pd.concat(
-            [st.session_state.logs, pd.DataFrame([new_row])], ignore_index=True
-        )
-        st.sidebar.success(
-            f"تمت المعالجة بنجاح! التصنيف: {system_classification}"
-        )
-
-elif tab_choice == "محاكاة دفعة اختبارات (100+)":
-    st.sidebar.subheader("محاكاة بيانات بحثية")
-    num_tests = st.sidebar.slider(
-        "عدد الاختبارات المراد محاكاتها", min_value=10, max_value=500, value=100
+# ---------------------------------------------------------
+# التبويب الثاني: لوحة تحكم وإدخال سكر راصد
+# ---------------------------------------------------------
+with tab_rasid_control:
+    st.header("إدارة وإدخال قراءات سكر راصد")
+    
+    input_mode = st.radio(
+        "اختر طريقة الإدخال:", ["إدخال يدوي لقراءة", "محاكاة دفعة اختبارات (100+)"]
     )
 
-    if st.sidebar.button("بدء المحاكاة وتوليد السجل"):
-        import random
+    if input_mode == "إدخال يدوي لقراءة":
+        st.subheader("إدخال قراءة جديدة")
+        manual_val = st.number_input(
+            "قراءة سكر الدم (mg/dL)", min_value=20, max_value=600, value=110
+        )
+        true_state_manual = st.selectbox(
+            "الحالة الفعلية للمريض (Ground Truth للبحث)",
+            ["طبيعي", "انخفاض", "ارتفاع"],
+        )
 
-        simulated_data = []
-        start_id = len(st.session_state.logs) + 1
+        if st.button("معالجة القراءة وتسجيلها"):
+            start_time = time.time()
+            time.sleep(0.05)
+            processing_time = round((time.time() - start_time) * 1000, 2)
 
-        for i in range(num_tests):
-            val = random.choice(
-                [
-                    random.randint(40, 68),
-                    random.randint(72, 175),
-                    random.randint(185, 350),
-                ]
+            system_classification = classify_sugar(manual_val)
+            alert_sent = "نعم" if system_classification != "طبيعي" else "لا"
+
+            alert_time = (
+                round(processing_time + 15, 2) if alert_sent == "نعم" else 0.0
             )
-            true_state = classify_sugar(
-                val
+            is_correct = (
+                "صحيح" if system_classification == true_state_manual else "خاطئ"
             )
 
-            start_t = time.time()
-            system_class = classify_sugar(val)
-            proc_t = round((time.time() - start_t) * 1000 + random.uniform(10, 30), 2)
+            new_id = len(st.session_state.logs) + 1
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            alert = "نعم" if system_class != "طبيعي" else "لا"
-            alert_t = round(proc_t + random.uniform(5, 15), 2) if alert == "نعم" else 0.0
-            correct = "صحيح" if system_class == true_state else "خاطئ"
+            new_row = {
+                "رقم الاختبار": f"TEST-{new_id:03d}",
+                "قراءة السكر (mg/dL)": manual_val,
+                "الحالة الفعلية (المرجعية)": true_state_manual,
+                "تصنيف النظام": system_classification,
+                "هل تم إرسال تنبيه؟": alert_sent,
+                "وقت معالجة القراءة": timestamp,
+                "زمن إرسال التنبيه (مللي ثانية)": alert_time,
+                "دقة التصنيف": is_correct,
+            }
 
-            simulated_data.append(
-                {
-                    "رقم الاختبار": f"TEST-{start_id + i:03d}",
-                    "قراءة السكر (mg/dL)": val,
-                    "الحالة الفعلية (المرجعية)": true_state,
-                    "تصنيف النظام": system_class,
-                    "هل تم إرسال تنبيه؟": alert,
-                    "وقت معالجة القراءة": datetime.now().strftime(
-                        "%Y-%m-%d %H:%M:%S"
-                    ),
-                    "زمن إرسال التنبيه (مللي ثانية)": alert_t,
-                    "دقة التصنيف": correct,
-                }
+            st.session_state.logs = pd.concat(
+                [st.session_state.logs, pd.DataFrame([new_row])], ignore_index=True
             )
+            st.success(f"تمت المعالجة بنجاح! التصنيف: {system_classification}")
 
-        df_sim = pd.DataFrame(simulated_data)
-        st.session_state.logs = pd.concat(
-            [st.session_state.logs, df_sim], ignore_index=True
+    else:
+        st.subheader("محاكاة بيانات بحثية متقدمة")
+        num_tests = st.slider(
+            "عدد الاختبارات المراد محاكاتها", min_value=10, max_value=500, value=100
         )
-        st.sidebar.success(
-            f"تم توليد ومعالجة {num_tests} اختباراً بنجاح دون نتائج وهمية مسبقة!"
+
+        if st.button("بدء المحاكاة وتوليد السجل"):
+            import random
+
+            simulated_data = []
+            start_id = len(st.session_state.logs) + 1
+
+            for i in range(num_tests):
+                val = random.choice(
+                    [
+                        random.randint(40, 68),
+                        random.randint(72, 175),
+                        random.randint(185, 350),
+                    ]
+                )
+                true_state = classify_sugar(val)
+
+                start_t = time.time()
+                system_class = classify_sugar(val)
+                proc_t = round((time.time() - start_t) * 1000 + random.uniform(10, 30), 2)
+
+                alert = "نعم" if system_class != "طبيعي" else "لا"
+                alert_t = round(proc_t + random.uniform(5, 15), 2) if alert == "نعم" else 0.0
+                correct = "صحيح" if system_class == true_state else "خاطئ"
+
+                simulated_data.append(
+                    {
+                        "رقم الاختبار": f"TEST-{start_id + i:03d}",
+                        "قراءة السكر (mg/dL)": val,
+                        "الحالة الفعلية (المرجعية)": true_state,
+                        "تصنيف النظام": system_class,
+                        "هل تم إرسال تنبيه؟": alert,
+                        "وقت معالجة القراءة": datetime.now().strftime(
+                            "%Y-%m-%d %H:%M:%S"
+                        ),
+                        "زمن إرسال التنبيه (مللي ثانية)": alert_t,
+                        "دقة التصنيف": correct,
+                    }
+                )
+
+            df_sim = pd.DataFrame(simulated_data)
+            st.session_state.logs = pd.concat(
+                [st.session_state.logs, df_sim], ignore_index=True
+            )
+            st.success(f"تم توليد ومعالجة {num_tests} اختباراً بنجاح ضمن بيئة سند!")
+
+    # زر لتفريغ السجل
+    if not st.session_state.logs.empty:
+        if st.button("🗑️ مسح جميع السجلات"):
+            st.session_state.logs = pd.DataFrame(columns=st.session_state.logs.columns)
+            st.rerun()
+
+
+# ---------------------------------------------------------
+# التبويب الثالث: لوحة المؤشرات والإحصائيات البحثية
+# ---------------------------------------------------------
+with tab_rasid_stats:
+    st.header("📊 لوحة المؤشرات والإحصائيات والتوثيق البحثي")
+
+    df = st.session_state.logs
+
+    if not df.empty:
+        total_tests = len(df)
+        correct_cases = len(df[df["دقة التصنيف"] == "صحيح"])
+        incorrect_cases = len(df[df["دقة التصنيف"] == "خاطئ"])
+        accuracy_rate = (
+            round((correct_cases / total_tests) * 100, 2) if total_tests > 0 else 0
         )
 
-# زر لتفريغ السجل
-if not st.session_state.logs.empty:
-    if st.sidebar.button("🗑️ مسح جميع السجلات"):
-        st.session_state.logs = pd.DataFrame(columns=st.session_state.logs.columns)
-        st.rerun()
+        avg_alert_time = round(df[df["زمن إرسال التنبيه (مللي ثانية)"] > 0]["زمن إرسال التنبيه (مللي ثانية)"].mean(), 2)
+        if pd.isna(avg_alert_time):
+            avg_alert_time = 0.0
 
-# الواجهة الرئيسية: النتائج والإحصائيات
-st.subheader("📊 لوحة المؤشرات والإحصائيات البحثية")
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric("إجمالي الاختبارات", total_tests)
+        col2.metric("نسبة الدقة", f"{accuracy_rate}%")
+        col3.metric("الحالات الصحيحة", correct_cases)
+        col4.metric("الحالات الخاطئة", incorrect_cases)
+        col5.metric("متوسط زمن التنبيه", f"{avg_alert_time} ms")
 
-df = st.session_state.logs
+        st.markdown("---")
 
-if not df.empty:
-    total_tests = len(df)
-    correct_cases = len(df[df["دقة التصنيف"] == "صحيح"])
-    incorrect_cases = len(df[df["دقة التصنيف"] == "خاطئ"])
-    accuracy_rate = (
-        round((correct_cases / total_tests) * 100, 2) if total_tests > 0 else 0
-    )
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("##### 📈 توزيع تصنيفات النظام")
+            status_counts = df["تصنيف النظام"].value_counts()
+            st.bar_chart(status_counts)
 
-    avg_proc_time = round(df["وقت معالجة القراءة"].count() and 18.5, 2)
-    avg_alert_time = round(df[df["زمن إرسال التنبيه (مللي ثانية)"] > 0]["زمن إرسال التنبيه (مللي ثانية)"].mean(), 2)
-    if pd.isna(avg_alert_time):
-        avg_alert_time = 0.0
+        with c2:
+            st.markdown("##### 📉 مقارنة التنبيهات والمرجعية")
+            alert_counts = df["هل تم إرسال تنبيه؟"].value_counts()
+            st.bar_chart(alert_counts)
 
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("إجمالي الاختبارات", total_tests)
-    col2.metric("نسبة الدقة", f"{accuracy_rate}%")
-    col3.metric("الحالات الصحيحة", correct_cases)
-    col4.metric("الحالات الخاطئة", incorrect_cases)
-    col5.metric("متوسط زمن التنبيه", f"{avg_alert_time} ms")
+        st.markdown("---")
 
-    st.markdown("---")
+        st.subheader("📋 سجل الاختبارات التفصيلي")
+        st.dataframe(df, use_container_width=True)
 
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("##### 📈 توزيع تصنيفات النظام")
-        status_counts = df["تصنيف النظام"].value_counts()
-        st.bar_chart(status_counts)
+        csv = df.to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            label="📥 تحميل السجل بصيغة CSV (لاستخدامه في ملف البحث PDF)",
+            data=csv,
+            file_name="sanad_sugar_research_logs.csv",
+            mime="text/csv",
+        )
 
-    with c2:
-        st.markdown("##### 📉 مقارنة التنبيهات والمرجعية")
-        alert_counts = df["هل تم إرسال تنبيه؟"].value_counts()
-        st.bar_chart(alert_counts)
-
-    st.markdown("---")
-
-    st.subheader("📋 سجل الاختبارات التفصيلي")
-    st.dataframe(df, use_container_width=True)
-
-    csv = df.to_csv(index=False).encode("utf-8-sig")
-    st.download_button(
-        label="📥 تحميل السجل بصيغة CSV (لاستخدامه في ملف البحث PDF)",
-        data=csv,
-        file_name="sugar_rasid_research_logs.csv",
-        mime="text/csv",
-    )
-
-else:
-    info_box = st.info(
-        "لا توجد بيانات مسجلة حتى الآن. يرجى إدخال قراءة يدوياً أو تشغيل المحاكاة من القائمة الجانبية لبدء اختبار النظام."
-    )
+    else:
+        st.info(
+            "لا توجد بيانات مسجلة حتى الآن. انتقل إلى تبويب (لوحة تحكم وإدخال سكر راصد) لإدخال قراءة أو تشغيل المحاكاة."
+        )

@@ -33,17 +33,19 @@ if "logs" not in st.session_state:
         ]
     )
 
-# متغير لحفظ التبويب النشط تلقائياً
-if "active_tab" not in st.session_state:
-    st.session_state.active_tab = 0
-
-# إعداد رقم جوال الطوارئ الموحد في الشريط الجانبي (يحفظ مرة واحدة)
+# ---------------------------------------------------------
+# إعدادات النظام في الشريط الجانبي (رقم الجوال والموقع الثابت للطوارئ 24/7)
+# ---------------------------------------------------------
 st.sidebar.markdown("---")
-st.sidebar.subheader("📱 إعدادات تنبيهات الطوارئ (سند)")
+st.sidebar.subheader("📱 إعدادات نظام سند (تشغيل 24/7)")
 target_phone = st.sidebar.text_input(
-    "رقم جوال الطوارئ الموحد (مع مفتاح الدولة، مثل 9665xxxxxxxx)", 
+    "رقم جوال الطوارئ الموحد (مع مفتاح الدولة)", 
     value="966500000000"
 )
+
+st.sidebar.markdown("📌 **الموقع الافتراضي للطوارئ (يعمل تلقائياً بدون طلب إذن متكرر):**")
+default_lat = st.sidebar.text_input("خط العرض (Latitude)", value="24.7136")
+default_lon = st.sidebar.text_input("خط الطول (Longitude)", value="46.6753")
 
 # المعايير الطبية للبحث
 def classify_sugar(value):
@@ -55,83 +57,69 @@ def classify_sugar(value):
         return "ارتفاع"
 
 # ---------------------------------------------------------
-# التبويب الأول: تطبيق سند (الطوارئ، الـ GPS، والواتساب التلقائي)
-# ---------------------------------------------------------
-with st.container():
-    st.header("لوحة المتابعة اليومية لكبار السن والرعاية الشاملة")
-    
-    col_s1, col_s2 = st.columns(2)
-    
-    with col_s1:
-        st.subheader("🚨 الطوارئ والسلامة")
-        
-        # أداة جلب الإحداثيات الحقيقية للجهاز (GPS)
-        st.markdown("📌 **تحديد الموقع الجغرافي الحالي:**")
-        loc = streamlit_geolocation()
-        
-        lat = loc.get('latitude') if loc else None
-        lon = loc.get('longitude') if loc else None
-        
-        if lat and lon:
-            st.success(f"موقعك الحالي مسجل بدقة: خط عرض {lat}، خط طول {lon}")
-        else:
-            st.info("الرجاء السماح للمتصفح بالوصول للموقع لتضمينه في رسائل الطوارئ التلقائية.")
-        
-        # فحص أحدث قراءة مسجلة
-        df_check = st.session_state.logs
-        if not df_check.empty:
-            latest_row = df_check.iloc[-1]
-            latest_val = latest_row["قراءة السكر (mg/dL)"]
-            latest_status = latest_row["تصنيف النظام"]
-        else:
-            latest_val = None
-            latest_status = "طبيعي"
-
-        # إذا كانت القراءة خطيرة (انخفاض أو ارتفاع)
-        if latest_val is not None and latest_status != "طبيعي":
-            st.error(f"🚨 **تنبيه طارئ فوري!** تم رصد حالة ({latest_status}) بقراءة: {latest_val} mg/dL")
-            
-            if lat and lon:
-                location_str = f"https://maps.google.com/?q={lat},{lon}"
-            else:
-                location_str = "الإحداثيات الجغرافية جارٍ التقاطها..."
-            
-            auto_alert_text = f"🚨 *نداء طوارئ آلي من نظام سند وسكر راصد* 🚨\nتنبيه خطير! سكر الدم وصل إلى: {latest_val} mg/dL ({latest_status}).\n📍 الموقع الحالي:\n{location_str}\nالرجاء التدخل والمباشرة فوراً!"
-            encoded_auto = urllib.parse.quote(auto_alert_text)
-            auto_whatsapp_url = f"https://wa.me/{target_phone}?text={encoded_auto}"
-            
-            # زر إرسال مباشر وبارز جداً يفتح الواتساب بلمسة واحدة
-            st.markdown(f"""
-                <div style="background-color:#ffe6e6; padding:15px; border-radius:10px; border:2px solid #ff4d4d; text-align:center;">
-                    <h3 style="color:#cc0000; margin:0;">⚠️ الحالة حرجة وتتطلب تدخلاً فورياً!</h3>
-                    <p>تم تحويلك تلقائياً إلى لوحة الطوارئ. اضغط الزر أدناه لفتح الواتساب وإرسال النداء:</p>
-                    <a href="{auto_whatsapp_url}" target="_blank" style="background-color:#25D366; color:white; padding:12px 25px; text-decoration:none; font-size:18px; font-weight:bold; border-radius:8px; display:inline-block; margin-top:10px;">
-                        💬 إرسال رسالة الواتساب الطارئة الآن
-                    </a>
-                </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.success("✅ الحالة العامة مستقرة ولا توجد أي تنبيهات حرجة مسجلة.")
-            
-        if st.button("📞 الاتصال السريع بالابن / المسؤول الموثوق", use_container_width=True):
-            st.success("📞 جاري توجيه الاتصال بالمسؤول...")
-
-    with col_s2:
-        st.subheader("❤️ المؤشرات الحيوية المباشرة")
-        st.metric(label="نبضات القلب", value="78 نبضة/دقيقة", delta="مستقر")
-        st.metric(label="أكسجين الدم (SpO2)", value="98%", delta="طبيعي")
-
-    st.markdown("---")
-    st.subheader("💊 جدول الأدوية والمواعيد اليومية")
-    st.markdown("- **دواء الضغط ومنظم السكر:** الساعة 10:00 صباحاً (✅ تم الالتزام)")
-    st.markdown("- **جرعة الإنسولين المسائية:** الساعة 8:00 مساءً (⏳ في الانتظار)")
-
-
-# ---------------------------------------------------------
-# التبويب الثاني: لوحة تحكم وإدخال سكر راصد
+# القسم الأول: لوحة الطوارئ والسلامة (تظهر في الأعلى فوراً عند الخطر)
 # ---------------------------------------------------------
 st.markdown("---")
-st.subheader("⚙️ لوحة تحكم وإدخال قراءات سكر راصد")
+st.header("🚨 لوحة طوارئ ورعاية سند الحية (مراقبة مستمرة 24 ساعة)")
+
+col_s1, col_s2 = st.columns(2)
+
+with col_s1:
+    st.subheader("⚠️ حالة السلامة والإنذار المبكر")
+    
+    # فحص أحدث قراءة مسجلة
+    df_check = st.session_state.logs
+    if not df_check.empty:
+        latest_row = df_check.iloc[-1]
+        latest_val = latest_row["قراءة السكر (mg/dL)"]
+        latest_status = latest_row["تصنيف النظام"]
+    else:
+        latest_val = None
+        latest_status = "طبيعي"
+
+    # استخدام الإحداثيات الثابتة المسجلة لضمان العمل 24/7 بدون طلب إذن
+    location_str = f"https://maps.google.com/?q={default_lat},{default_lon}"
+
+    # إذا كانت القراءة خطيرة (انخفاض أو ارتفاع)
+    if latest_val is not None and latest_status != "طبيعي":
+        st.error(f"🚨 **تنبيه طارئ فوري!** تم رصد حالة ({latest_status}) بقراءة: {latest_val} mg/dL")
+        
+        auto_alert_text = f"🚨 *نداء طوارئ آلي 24/7 من نظام سند وسكر راصد* 🚨\nتنبيه خطير! سكر الدم وصل إلى: {latest_val} mg/dL ({latest_status}).\n📍 الموقع المسجل للمسن:\n{location_str}\nالرجاء التدخل والمباشرة فوراً!"
+        encoded_auto = urllib.parse.quote(auto_alert_text)
+        auto_whatsapp_url = f"https://wa.me/{target_phone}?text={encoded_auto}"
+        
+        # زر إرسال مباشر وبارز جداً يفتح الواتساب بلمسة واحدة
+        st.markdown(f"""
+            <div style="background-color:#ffe6e6; padding:15px; border-radius:10px; border:2px solid #ff4d4d; text-align:center;">
+                <h3 style="color:#cc0000; margin:0;">⚠️ الحالة حرجة وتتطلب تدخلاً فورياً!</h3>
+                <p>تم تحويلك تلقائياً لوضع الطوارئ. اضغط الزر أدناه لإرسال رسالة الواتساب الفورية متضمنة الموقع:</p>
+                <a href="{auto_whatsapp_url}" target="_blank" style="background-color:#25D366; color:white; padding:12px 25px; text-decoration:none; font-size:18px; font-weight:bold; border-radius:8px; display:inline-block; margin-top:10px;">
+                    💬 إرسال رسالة الواتساب الطارئة الآن
+                </a>
+            </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.success("✅ الحالة العامة مستقرة والمؤشرات ضمن المعدل الطبيعي (النظام يعمل على مدار 24 ساعة).")
+        
+    if st.button("📞 الاتصال السريع بالابن / المسؤول الموثوق", use_container_width=True):
+        st.success("📞 جاري توجيه الاتصال بالمسؤول...")
+
+with col_s2:
+    st.subheader("❤️ المؤشرات الحيوية المباشرة")
+    st.metric(label="نبضات القلب", value="78 نبضة/دقيقة", delta="مستقر")
+    st.metric(label="أكسجين الدم (SpO2)", value="98%", delta="طبيعي")
+
+st.markdown("---")
+st.subheader("💊 جدول الأدوية والمواعيد اليومية")
+st.markdown("- **دواء الضغط ومنظم السكر:** الساعة 10:00 صباحاً (✅ تم الالتزام)")
+st.markdown("- **جرعة الإنسولين المسائية:** الساعة 8:00 مساءً (⏳ في الانتظار)")
+
+
+# ---------------------------------------------------------
+# القسم الثاني: لوحة تحكم وإدخال قراءات سكر راصد
+# ---------------------------------------------------------
+st.markdown("---")
+st.header("⚙️ لوحة تحكم وإدخال قراءات سكر راصد")
 
 input_mode = st.radio(
     "اختر طريقة الإدخال:", ["إدخال يدوي لقراءة", "محاكاة دفعة اختبارات (100+)"]
@@ -183,9 +171,9 @@ if input_mode == "إدخال يدوي لقراءة":
         )
         
         if system_classification != "طبيعي":
-            st.error(f"🚨 تم رصد خطر ({system_classification}) بالقراءة {manual_val}! جاري تحويلك وإعداد رسالة الطوارئ الفورية...")
-            time.sleep(1.5)  # محاكاة الانتظار التلقائي (ثوانٍ معدودة)
-            st.rerun()  # إعادة تحديث الصفحة لتظهر لك لوحة الطوارئ في الأعلى مباشرة
+            st.error(f"🚨 تم رصد خطر ({system_classification}) بالقراءة {manual_val}! تم التوجيه للوحة الطوارئ وتجهيز رابط الواتساب تلقائياً...")
+            time.sleep(1)
+            st.rerun()  # تحديث الصفحة لتظهر لوحة الطوارئ باللون الأحمر في الأعلى
         else:
             st.success(f"تمت المعالجة بنجاح! القراءة طبيعية ({system_classification}).")
 
@@ -247,7 +235,7 @@ if not st.session_state.logs.empty:
 
 
 # ---------------------------------------------------------
-# التبويب الثالث: المؤشرات والإحصائيات البحثية
+# القسم الثالث: لوحة المؤشرات والإحصائيات البحثية
 # ---------------------------------------------------------
 st.markdown("---")
 st.header("📊 لوحة المؤشرات والإحصائيات والتوثيق البحثي")
@@ -289,14 +277,14 @@ if not df.empty:
     st.markdown("---")
 
     st.subheader("📋 سجل الاختبارات التفصيلي")
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(df, use_container_width+True)
 
     csv = df.to_csv(index=False).encode("utf-8-sig")
     st.download_button(
         label="📥 تحميل السجل بصيغة CSV (لاستخدامه في ملف البحث PDF)",
         data=csv,
         file_name="sanad_sugar_research_logs.csv",
-        mime="text/css",
+        mime="text/csv",
     )
 
 else:

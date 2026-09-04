@@ -4,6 +4,7 @@ import pandas as pd
 import streamlit as st
 import base64
 import requests
+import urllib.parse
 
 st.set_page_config(page_title="تطبيق الأب - سكر راصد", layout="wide")
 
@@ -12,6 +13,9 @@ st.markdown("لوحة تسجيل البيانات الخاصة بالأب وإر
 
 # إعدادات الأب وثوابت النظام
 father_phone = "0509036511"
+default_lat = "24.549513"
+default_lon = "44.377016"
+location_str = f"https://maps.google.com/?q={default_lat},{default_lon}"
 
 if "logs" not in st.session_state:
     st.session_state.logs = pd.DataFrame(
@@ -25,7 +29,7 @@ if "logs" not in st.session_state:
 st.sidebar.subheader("⚙️ إعدادات الرفع السحابي")
 github_token = st.sidebar.text_input("GitHub Token", type="password", value="")
 repo_name = st.sidebar.text_input("اسم المستودع", value="Naifalodiane/sugar-rasid-")
-target_phone = st.sidebar.text_input("رقم الطوارئ", value="966500000000")
+target_phone = st.sidebar.text_input("رقم الطوارئ للابن", value="966500000000")
 
 st.sidebar.markdown("---")
 st.sidebar.info(f"📱 هاتف الأب المسجل: {father_phone}")
@@ -58,6 +62,21 @@ if st.button("معالجة وتسجيل ونشر القراءة فوراً", use
     
     st.session_state.logs = pd.concat([st.session_state.logs, pd.DataFrame([new_row])], ignore_index=True)
     
+    # تنبيهات الطوارئ الفورية في شاشة الأب إذا كانت القراءة حرجة
+    if system_classification != "طبيعي":
+        auto_alert_text = f"🚨 *تنبيه طوارئ من تطبيق الأب* 🚨\nالقراءة المسجلة: {manual_val} mg/dL ({system_classification}).\n📍 الموقع: {location_str}"
+        encoded_auto = urllib.parse.quote(auto_alert_text)
+        whatsapp_url = f"https://wa.me/{target_phone}?text={encoded_auto}"
+        
+        st.markdown(f"""
+            <div style="background-color:#fff5f5; padding:15px; border-radius:10px; border:2px solid #ff4d4d; text-align:center; margin-bottom:15px;">
+                <h3 style="color:#cc0000; margin-top:0;">🚨 تنبيه طوارئ: القراءة غير طبيعية ({system_classification}: {manual_val})</h3>
+                <a href="{whatsapp_url}" target="_blank" style="background-color:#25D366; color:white; padding:10px 20px; text-decoration:none; font-size:15px; font-weight:bold; border-radius:6px; display:inline-block;">
+                    💬 إرسال تنبيه الطوارئ للابن عبر الواتساب فوراً
+                </a>
+            </div>
+        """, unsafe_allow_html=True)
+
     # الرفع السحابي التلقائي
     if github_token:
         try:

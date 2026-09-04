@@ -33,23 +33,38 @@ if "logs" not in st.session_state:
         ]
     )
 
-# تصميم التبويبات الرئيسية لدمج المشروعين
+# ---------------------------------------------------------
+# إعدادات رقم الجوال الموحدة في الشريط الجانبي (تُحفظ مرة واحدة)
+# ---------------------------------------------------------
+st.sidebar.markdown("---")
+st.sidebar.subheader("📱 إعدادات تنبيهات الطوارئ (سند)")
+target_phone = st.sidebar.text_input(
+    "رقم جوال الطوارئ الموحد (مع مفتاح الدولة، مثل 9665xxxxxxxx)", 
+    value="966500000000"
+)
+
+# تصميم التبويبات الرئيسية
 tab_main, tab_rasid_control, tab_rasid_stats = st.tabs([
     "🚨 لوحة طوارئ ورعاية سند", 
     "⚙️ لوحة تحكم وإدخال سكر راصد", 
     "📊 المؤشرات والإحصائيات البحثية"
 ])
 
+# المعايير الطبية القياسية للبحث (للتصنيف)
+def classify_sugar(value):
+    if value < 75:
+        return "انخفاض"
+    elif value <= 180:
+        return "طبيعي"
+    else:
+        return "ارتفاع"
+
+
 # ---------------------------------------------------------
-# التبويب الأول: تطبيق سند (رعاية الطوارئ، تحديد الموقع الحقيقي GPS، واتساب)
+# التبويب الأول: تطبيق سند (رعاية الطوارئ، تحديد الموقع الجغرافي GPS)
 # ---------------------------------------------------------
 with tab_main:
     st.header("لوحة المتابعة اليومية لكبار السن والرعاية الشاملة")
-    
-    # إعداد رقم جوال المستلم للتنبيهات الحقيقية في الشريط الجانبي
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("📱 إعدادات تنبيهات الطوارئ (سند)")
-    target_phone = st.sidebar.text_input("رقم جوال الطوارئ (مع مفتاح الدولة، مثل 9665xxxxxxxx)", value="966500000000")
     
     col_s1, col_s2 = st.columns(2)
     
@@ -65,26 +80,48 @@ with tab_main:
         
         if lat and lon:
             st.success(f"موقعك الحالي مسجل بدقة: خط عرض {lat}، خط طول {lon}")
-
         else:
-            st.info("اضغط على السماح للمتصفح برؤية الموقع لتضمينه في نداء الطوارئ.")
+            st.info("الرجاء السماح للمتصفح بالوصول للموقع لتضمينه في رسائل الطوارئ التلقائية.")
         
-        # زر الفزعة الطارئة مع دمج الإحداثيات الحقيقية في رسالة الواتساب
-        if st.button("🚨 زر الفزعة الطارئة (SOS)", use_container_width=True):
-            st.error("🚨 تم إطلاق نداء الطوارئ الحقيقي وتم التقاط الإحداثيات الجغرافية!")
+        # فحص أحدث قراءة مسجلة في السجل
+        df_check = st.session_state.logs
+        latest_row = None
+        if not df_check.empty:
+            latest_row = df_check.iloc[-1]
+            latest_val = latest_row["قراءة السكر (mg/dL)"]
+            latest_status = latest_row["تصنيف النظام"]
+        else:
+            latest_val = None
+            latest_status = "طبيعي"
+
+        # إذا كانت أحدث قراءة تدل على خطورة (انخفاض أو ارتفاع)
+        if latest_val is not None and latest_status != "طبيعي":
+            st.error(f"🚨 **تنبيه طارئ من نظام سكر راصد!** آخر قراءة مسجلة خطيرة: ({latest_val} mg/dL) - الحالة: {latest_status}")
             
-            # بناء رابط خريطة قوقل مباشر بالإحداثيات الحقيقية إن وجدت
             if lat and lon:
                 location_str = f"https://maps.google.com/?q={lat},{lon}"
             else:
-                location_str = "لم يتم تحديد الإحداثيات بدقة من المتصفح (افتراضي)"
+                location_str = "لم يتم التقاط الإحداثيات الجغرافية بعد"
             
-            alert_text = f"🚨 *نداء طوارئ عاجل من تطبيق سند* 🚨\nالوالد يحتاج إلى مساعدة فورية!\n📍 رابط الموقع الحي عبر خرائط جوجل:\n{location_str}\n🩺 الحالة: تتطلب التدخل السريع."
-            encoded_text = urllib.parse.quote(alert_text)
-            whatsapp_url = f"https://wa.me/{target_phone}?text={encoded_text}"
+            smart_alert_text = f"🚨 *نداء طوارئ عاجل من تطبيق سند وسكر راصد* 🚨\nتنبيه خطير! سكر الدم لدى المسن وصل إلى: {latest_val} mg/dL ({latest_status}).\n📍 الموقع الحالي للجهاز:\n{location_str}\nالرجاء سرعة التدخل والمباشرة فوراً!"
+            encoded_smart = urllib.parse.quote(smart_alert_text)
+            smart_whatsapp_url = f"https://wa.me/{target_phone}?text={encoded_smart}"
             
-            # عرض رابط تفعيلي مباشر للواتساب
-            st.markdown(f"👉 **[اضغط هنا لإرسال رسالة الطوارئ الفورية عبر الواتساب لجوالك]({whatsapp_url})**", unsafe_allow_html=True)
+            st.markdown(f"👉 **[🚨 اضغط هنا لإرسال رسالة الطوارئ الفورية عبر الواتساب للأرقام المعتمدة]({smart_whatsapp_url})**", unsafe_allow_html=True)
+        else:
+            st.success("✅ الحالة العامة مستقرة ولا توجد قراءات حرجة حالياً.")
+        
+        # زر الفزعة اليدوي الإضافي
+        if st.button("🚨 زر الفزعة الطارئة اليدوي (SOS)", use_container_width=True):
+            if lat and lon:
+                location_str = f"https://maps.google.com/?q={lat},{lon}"
+            else:
+                location_str = "الإحداثيات غير متاحة"
+            
+            manual_text = f"🚨 *نداء طوارئ يدوي من تطبيق سند* 🚨\nالمسن يحتاج إلى مساعدة فورية!\n📍 الموقع:\n{location_str}"
+            encoded_m = urllib.parse.quote(manual_text)
+            manual_whatsapp_url = f"https://wa.me/{target_phone}?text={encoded_m}"
+            st.markdown(f"👉 **[اضغط هنا لإرسال رسالة الطوارئ اليدوية عبر الواتساب]({manual_whatsapp_url})**", unsafe_allow_html=True)
             
         if st.button("📞 الاتصال السريع بالابن / المسؤول الموثوق", use_container_width=True):
             st.success("📞 جاري توجيه الاتصال بالمسؤول...")
@@ -100,16 +137,6 @@ with tab_main:
     st.markdown("- **جرعة الإنسولين المسائية:** الساعة 8:00 مساءً (⏳ في الانتظار)")
 
 
-# المعايير الطبية القياسية للبحث (للتصنيف)
-def classify_sugar(value):
-    if value < 70:
-        return "انخفاض"
-    elif value <= 180:
-        return "طبيعي"
-    else:
-        return "ارتفاع"
-
-
 # ---------------------------------------------------------
 # التبويب الثاني: لوحة تحكم وإدخال سكر راصد
 # ---------------------------------------------------------
@@ -121,13 +148,13 @@ with tab_rasid_control:
     )
 
     if input_mode == "إدخال يدوي لقراءة":
-        st.subheader("إدخال قراءة جديدة")
+        st.subheader("إدخال قراءة جديدة (مثل تجربة 50 للانخفاض)")
         manual_val = st.number_input(
-            "قراءة سكر الدم (mg/dL)", min_value=20, max_value=600, value=110
+            "قراءة سكر الدم (mg/dL)", min_value=20, max_value=600, value=50
         )
         true_state_manual = st.selectbox(
             "الحالة الفعلية للمريض (Ground Truth للبحث)",
-            ["طبيعي", "انخفاض", "ارتفاع"],
+            ["انخفاض", "طبيعي", "ارتفاع"],
         )
 
         if st.button("معالجة القراءة وتسجيلها"):
@@ -162,7 +189,11 @@ with tab_rasid_control:
             st.session_state.logs = pd.concat(
                 [st.session_state.logs, pd.DataFrame([new_row])], ignore_index=True
             )
-            st.success(f"تمت المعالجة بنجاح! التصنيف: {system_classification}")
+            
+            if system_classification != "طبيعي":
+                st.error(f"⚠️ تنبيه خطير! تم رصد حالة ({system_classification}) بالقراءة {manual_val} mg/dL. **انتقل فوراً إلى التبويب الأول (لوحة طوارئ ورعاية سند) لإرسال رسالة الواتساب الفورية!**")
+            else:
+                st.success(f"تمت المعالجة بنجاح! القراءة طبيعية ({system_classification}).")
 
     else:
         st.subheader("محاكاة بيانات بحثية متقدمة")
@@ -179,8 +210,8 @@ with tab_rasid_control:
             for i in range(num_tests):
                 val = random.choice(
                     [
-                        random.randint(40, 68),
-                        random.randint(72, 175),
+                        random.randint(40, 74),
+                        random.randint(76, 175),
                         random.randint(185, 350),
                     ]
                 )

@@ -1,4 +1,3 @@
-import time
 from datetime import datetime
 import pandas as pd
 import streamlit as st
@@ -7,9 +6,9 @@ import urllib.parse
 st.set_page_config(page_title="تطبيق الأب - سكر راصد", layout="wide")
 
 st.title("🛡️ نظام «سند» - تطبيق الأب")
-st.markdown("لوحة تسجيل البيانات الخاصة بالأب وإرسالها ومتابعة القراءات الحيوية.")
+st.markdown("لوحة تسجيل البيانات وحالات الطوارئ المباشرة.")
 
-# إعدادات الأب وثوابت النظام
+# ثوابت النظام ورقام التواصل
 father_phone = "0509036511"
 default_lat = "24.549513"
 default_lon = "44.377016"
@@ -24,11 +23,11 @@ if "logs" not in st.session_state:
         ]
     )
 
-st.sidebar.subheader("⚙️ إعدادات الطوارئ")
-target_phone = st.sidebar.text_input("رقم الطوارئ للابن", value="966500000000")
-
+st.sidebar.subheader("⚙️ إعدادات الطوارئ والاتصال")
+target_phone = st.sidebar.text_input("رقم طوارئ الابن (واتساب)", value="966500000000")
 st.sidebar.markdown("---")
-st.sidebar.info(f"📱 هاتف الأب المسجل: {father_phone}")
+st.sidebar.info(f"📱 جوال الأب المسجل: {father_phone}")
+st.sidebar.error("🚨 رقم الإسعاف السعودي المعتمد: 997")
 
 def classify_sugar(value):
     if value < 75:
@@ -60,16 +59,22 @@ if st.button("معالجة وتسجيل القراءة فوراً", use_containe
     
     # تنبيهات الطوارئ الفورية إذا كانت القراءة غير طبيعية
     if system_classification != "طبيعي":
-        auto_alert_text = f"🚨 *تنبيه طوارئ من تطبيق الأب* 🚨\nالقراءة المسجلة: {manual_val} mg/dL ({system_classification}).\n📍 الموقع: {location_str}"
+        auto_alert_text = f"🚨 *تنبيه طوارئ من تطبيق الأب* 🚨\nالقراءة المسجلة خطيرة: {manual_val} mg/dL ({system_classification}).\n📍 الموقع: {location_str}"
         encoded_auto = urllib.parse.quote(auto_alert_text)
         whatsapp_url = f"https://wa.me/{target_phone}?text={encoded_auto}"
         
         st.markdown(f"""
-            <div style="background-color:#fff5f5; padding:15px; border-radius:10px; border:2px solid #ff4d4d; text-align:center; margin-bottom:15px;">
-                <h3 style="color:#cc0000; margin-top:0;">🚨 تنبيه طوارئ: القراءة غير طبيعية ({system_classification}: {manual_val})</h3>
-                <a href="{whatsapp_url}" target="_blank" style="background-color:#25D366; color:white; padding:10px 20px; text-decoration:none; font-size:15px; font-weight:bold; border-radius:6px; display:inline-block;">
-                    💬 إرسال تنبيه الطوارئ للابن عبر الواتساب فوراً
-                </a>
+            <div style="background-color:#fff5f5; padding:20px; border-radius:12px; border:2px solid #ff4d4d; text-align:center; margin-bottom:15px;">
+                <h3 style="color:#cc0000; margin-top:0;">🚨 تحذير خطير: القراءة ({system_classification}: {manual_val}) غير طبيعية!</h3>
+                <p style="font-size:16px; margin-bottom:15px;">يمكنك التواصل السريع مع الابن أو طلب الإسعاف السعودي المباشر فوراً:</p>
+                <div style="display: flex; justify-content: center; gap: 15px; flex-wrap: wrap;">
+                    <a href="{whatsapp_url}" target="_blank" style="background-color:#25D366; color:white; padding:12px 20px; text-decoration:none; font-size:16px; font-weight:bold; border-radius:8px; display:inline-block;">
+                        💬 إرسال تنبيه للابن عبر الواتساب
+                    </a>
+                    <a href="tel:997" style="background-color:#cc0000; color:white; padding:12px 20px; text-decoration:none; font-size:16px; font-weight:bold; border-radius:8px; display:inline-block;">
+                        🚑 الاتصال الفوري بالإسعاف (997)
+                    </a>
+                </div>
             </div>
         """, unsafe_allow_html=True)
     else:

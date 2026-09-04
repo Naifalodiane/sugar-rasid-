@@ -3,7 +3,8 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 import urllib.parse
-from github import Github  # مكتبة التعامل مع غيت هب
+import base64
+import requests
 
 # إعدادات الصفحة والتصميم
 st.set_page_config(
@@ -40,7 +41,6 @@ if "logs" not in st.session_state:
 st.sidebar.markdown("---")
 st.sidebar.subheader("⚙️ إعدادات النظام وربط السحابة")
 
-# ضع هنا الرمز الذي نسخته من غيت هب
 github_token = st.sidebar.text_input("GitHub Token (رمز الربط السحابي)", type="password", value="")
 repo_name = st.sidebar.text_input("اسم مستودع غيت هب للأب", value="Naifalodiane/sugar-rasid")
 
@@ -62,23 +62,34 @@ latest_val = df_check.iloc[-1]["قراءة السكر (mg/dL)"] if not df_check.
 latest_status = df_check.iloc[-1]["تصنيف النظام"] if not df_check.empty else "طبيعي"
 location_str = f"https://maps.google.com/?q={default_lat},{default_lon}"
 
-# دالة لرفع التحديثات تلقائياً إلى غيت هب
-def update_github_repo(df):
+# دالة ذكية ومباشرة لرفع الملف عبر GitHub API بدون مكتبات خارجية
+def update_github_repo_direct(df):
     if not github_token:
         return False
     try:
-        g = Github(github_token)
-        repo = g.get_repo(repo_name)
         csv_content = df.to_csv(index=False)
+        encoded_content = base64.b64encode(csv_content.encode('utf-8')).decode('utf-8')
+        url = f"https://api.github.com/repos/{repo_name}/contents/shared_data.csv"
+        headers = {
+            "Authorization": f"Bearer {github_token}",
+            "Accept": "application/vnd.github+json"
+        }
         
-        try:
-            file = repo.get_contents("shared_data.csv")
-            repo.update_file(file.path, "Update shared_data.csv automatically", csv_content, file.sha)
-        except:
-            repo.create_file("shared_data.csv", "Create shared_data.csv", csv_content)
-        return True
+        # جلب الـ sha الحالي للملف إن وجد
+        get_res = requests.get(url, headers=headers)
+        sha = get_res.json().get("sha") if get_res.status_code == 200 else None
+        
+        data = {
+            "message": "Update shared_data.csv via Samad App",
+            "content": encoded_content
+        }
+        if sha:
+            data["sha"] = sha
+            
+        put_res = requests.put(url, headers=headers, json=data)
+        return put_res.status_code in [200, 201]
     except Exception as e:
-        st.sidebar.error(f"خطأ في الرفع السحابي: {e}")
+        st.sidebar.error(f"خطأ في الرفع: {e}")
         return False
 
 # ---------------- لوحة الطوارئ ----------------
@@ -128,10 +139,10 @@ if input_mode == "إدخال يدوي لقراءة":
         st.session_state.logs.to_csv("shared_data.csv", index=False)
         
         # رفع التحديث للسحابة مباشرة
-        if update_github_repo(st.session_state.logs):
+        if update_github_repo_direct(st.session_state.logs):
             st.success("✅ تم تحديث ونشر القراءة سحابياً بنجاح لتظهر عند الابن فوراً!")
         else:
-            st.warning("⚠️ تم الحفظ محلياً، يرجى إدخال الرمز في الشريط الجانبي لتفعيل الربط السحابي.")
+            st.warning("⚠️ تم الحفظ محلياً، تأكد من وضع الرمز الصحيح في الشريط الجانبي.")
         st.rerun()
 
 st.markdown("---")

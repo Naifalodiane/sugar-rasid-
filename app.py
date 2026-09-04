@@ -2,7 +2,6 @@ import time
 from datetime import datetime
 import pandas as pd
 import streamlit as st
-import urllib.parse
 import base64
 import requests
 
@@ -52,7 +51,7 @@ if st.button("معالجة وتسجيل ونشر القراءة فوراً", use
     
     st.session_state.logs = pd.concat([st.session_state.logs, pd.DataFrame([new_row])], ignore_index=True)
     
-    # الرفع السحابي المباشر
+    # الرفع السحابي الذكي (ينشئ الملف تلقائياً لو مو موجود)
     if github_token:
         try:
             csv_content = st.session_state.logs.to_csv(index=False)
@@ -63,11 +62,12 @@ if st.button("معالجة وتسجيل ونشر القراءة فوراً", use
                 "Accept": "application/vnd.github+json"
             }
             
+            # محاولة جلب الـ sha الحالي للملف
             get_res = requests.get(url, headers=headers)
             sha = get_res.json().get("sha") if get_res.status_code == 200 else None
             
             data = {
-                "message": "Update shared_data.csv",
+                "message": "Auto update shared_data.csv",
                 "content": encoded_content
             }
             if sha:
@@ -75,13 +75,13 @@ if st.button("معالجة وتسجيل ونشر القراءة فوراً", use
                 
             put_res = requests.put(url, headers=headers, json=data)
             if put_res.status_code in [200, 201]:
-                st.success("🚀 تمت الإضافة والرفع إلى غيت هب بنجاح تام!")
+                st.success("🚀 تم الرفع للسحابة بنجاح تام وتحديث بيانات الابن!")
             else:
-                st.error(f"خطأ في الرفع للسحابة: {put_res.text}")
+                st.error(f"خطأ: {put_res.status_code} - {put_res.json().get('message', put_res.text)}")
         except Exception as e:
             st.error(f"خطأ استثنائي: {e}")
     else:
-        st.warning("⚠️ يإلغاء السحابة: لم تقم بإدخال الرمز في الشريط الجانبي.")
+        st.warning("⚠️ يرجى إدخال الرمز في الشريط الجانبي.")
 
 st.markdown("### السجل الحالي:")
 st.dataframe(st.session_state.logs, use_container_width=True)

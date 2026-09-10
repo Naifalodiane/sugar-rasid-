@@ -3,6 +3,7 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 import urllib.parse
+import requests
 
 # ============================================================
 #  نظام «سند» - تطبيق الأب
@@ -102,10 +103,49 @@ live_lat, live_lon, is_live_gps = get_live_location()
 location_str = f"https://maps.google.com/?q={live_lat},{live_lon}"
 
 # ------------------------------------------------------------
+# 4) تيليجرام - إرسال تلقائي حقيقي (بدون أي ضغطة من المستلم)
+# ------------------------------------------------------------
+def send_telegram_alert(bot_token: str, chat_id: str, message: str):
+    """يرسل رسالة فوراً عبر بوت تيليجرام. يرجع (نجح؟, تفاصيل الخطأ إن وجد)."""
+    if not bot_token or not chat_id:
+        return False, "التوكن أو معرف المحادثة غير مُدخل"
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    try:
+        resp = requests.post(
+            url,
+            data={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"},
+            timeout=8,
+        )
+        if resp.status_code == 200 and resp.json().get("ok"):
+            return True, None
+        return False, resp.json().get("description", f"HTTP {resp.status_code}")
+    except requests.exceptions.RequestException as e:
+        return False, str(e)
+
+# ------------------------------------------------------------
 # الشريط الجانبي
 # ------------------------------------------------------------
 st.sidebar.subheader("⚙️ إعدادات الطوارئ والاتصال")
-target_phone = st.sidebar.text_input("رقم طوارئ الابن (واتساب)", value="966500000000")
+target_phone = st.sidebar.text_input("رقم طوارئ الابن (واتساب - احتياطي يدوي)", value="966500000000")
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("🤖 بوت تيليجرام (إرسال تلقائي)")
+with st.sidebar.expander("ℹ️ كيف أحصل على التوكن ومعرف المحادثة؟"):
+    st.markdown("""
+    **1. أنشئ البوت (مرة واحدة فقط):**
+    - افتح تيليجرام وابحث عن `BotFather`
+    - أرسل له `/newbot` واتبع التعليمات
+    - راح يعطيك **Token** — انسخه
+
+    **2. احصل على معرف محادثة الابن (Chat ID):**
+    - الابن يفتح محادثة مع البوت الجديد ويرسل له أي رسالة (مثلاً "مرحبا")
+    - افتح هذا الرابط بالمتصفح (استبدل TOKEN بتوكنك):
+      `https://api.telegram.org/botTOKEN/getUpdates`
+    - بتلاقي `"chat":{"id": 123456789 ...}` — هذا الرقم هو الـ Chat ID
+    """)
+telegram_token = st.sidebar.text_input("توكن البوت (Bot Token)", type="password")
+telegram_chat_id = st.sidebar.text_input("معرف محادثة الابن (Chat ID)")
+
 st.sidebar.markdown("---")
 st.sidebar.info(f"📱 جوال الأب المسجل: {father_phone}")
 st.sidebar.error("🚨 رقم الإسعاف السعودي المعتمد: 997")
@@ -124,14 +164,16 @@ def build_alert_links(message: str):
     return whatsapp_url
 
 def render_alert_box(title: str, message: str, box_color="#ff4d4d", bg_color="#fff5f5"):
+    # 1) إرسال تلقائي فوري عبر تيليجرام - بدون أي تدخل بشري
+    tg_ok, tg_error = send_telegram_alert(telegram_token, telegram_chat_id, message)
+
     whatsapp_url = build_alert_links(message)
     st.markdown(f"""
         <div style="background-color:{bg_color}; padding:20px; border-radius:12px; border:2px solid {box_color}; text-align:center; margin-bottom:15px;">
             <h3 style="color:#cc0000; margin-top:0;">{title}</h3>
-            <p style="font-size:16px; margin-bottom:15px;">يمكنك التواصل السريع مع الابن أو طلب الإسعاف السعودي المباشر فوراً:</p>
             <div style="display: flex; justify-content: center; gap: 15px; flex-wrap: wrap;">
                 <a href="{whatsapp_url}" target="_blank" style="background-color:#25D366; color:white; padding:12px 20px; text-decoration:none; font-size:16px; font-weight:bold; border-radius:8px; display:inline-block;">
-                    💬 إرسال تنبيه للابن عبر الواتساب
+                    💬 إرسال يدوي عبر الواتساب (احتياطي)
                 </a>
                 <a href="tel:997" style="background-color:#cc0000; color:white; padding:12px 20px; text-decoration:none; font-size:16px; font-weight:bold; border-radius:8px; display:inline-block;">
                     🚑 الاتصال الفوري بالإسعاف (997)
@@ -139,6 +181,11 @@ def render_alert_box(title: str, message: str, box_color="#ff4d4d", bg_color="#f
             </div>
         </div>
     """, unsafe_allow_html=True)
+
+    if tg_ok:
+        st.success("✅ تم إرسال التنبيه تلقائياً عبر تيليجرام إلى الابن (بدون أي تدخل يدوي).")
+    else:
+        st.warning(f"⚠️ لم يُرسل التنبيه التلقائي عبر تيليجرام: {tg_error}\n\nيمكنك استخدام رابط الواتساب اليدوي بالأعلى كبديل مؤقت.")
 
 # ------------------------------------------------------------
 # 3) زر الفزعة الطارئة (SOS) - فوري ولا يحتاج قراءة سكر

@@ -96,16 +96,24 @@ def init_db():
             event_type TEXT DEFAULT 'قراءة سكر'
         )
     """)
+    # ترحيل آمن: إضافة أعمدة الذكاء الاستباقي بدون فقدان أي بيانات قديمة
+    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(logs)").fetchall()}
+    if "smart_level" not in existing_cols:
+        conn.execute("ALTER TABLE logs ADD COLUMN smart_level TEXT DEFAULT 'طبيعي'")
+    if "smart_reason" not in existing_cols:
+        conn.execute("ALTER TABLE logs ADD COLUMN smart_reason TEXT DEFAULT ''")
     conn.commit()
     conn.close()
 
 def insert_log(row: dict):
+    row.setdefault("smart_level", row.get("system_class", ""))
+    row.setdefault("smart_reason", "")
     conn = get_conn()
     conn.execute("""
         INSERT INTO logs (test_id, reading, true_state, system_class, alert_sent,
-                           processed_at, alert_ms, accuracy, event_type)
+                           processed_at, alert_ms, accuracy, event_type, smart_level, smart_reason)
         VALUES (:test_id, :reading, :true_state, :system_class, :alert_sent,
-                :processed_at, :alert_ms, :accuracy, :event_type)
+                :processed_at, :alert_ms, :accuracy, :event_type, :smart_level, :smart_reason)
     """, row)
     conn.commit()
     conn.close()
@@ -121,6 +129,89 @@ def next_test_id() -> str:
     count = conn.execute("SELECT COUNT(*) FROM logs").fetchone()[0]
     conn.close()
     return f"TEST-{count + 1:03d}"
+
+# ------------------------------------------------------------
+# 5) الذكاء الاستباقي: خط أساس شخصي + كشف اتجاه الخطر
+# ------------------------------------------------------------
+MIN_HISTORY_FOR_BASELINE = 5   # أقل عدد قراءات قبل ما نعتمد على الخط الشخصي
+BASELINE_LOOKBACK = 15         # عدد القراءات المستخدمة بحساب المتوسط والانحراف
+TREND_LOOKBACK = 4             # عدد القراءات السابقة المفحوصة للاتجاه
+TREND_MIN_CHANGE = 20          # أقل فرق إجمالي (mg/dL) يعتبر اتجاه خطر حقيقي
+
+def get_personal_baseline():
+    """يرجع (المتوسط, الانحراف المعياري, عدد القراءات المستخدمة) من آخر قراءات سكر حقيقية."""
+    conn = get_conn()
+    df = pd.read_sql_query(
+        "SELECT reading FROM logs WHERE event_type='قراءة سكر' AND reading IS NOT NULL "
+        "ORDER BY id DESC LIMIT ?",
+        conn, params=(BASELINE_LOOKBACK,)
+    )
+    conn.close()
+    if len(df) < MIN_HISTORY_FOR_BASELINE:
+        return None, None, len(df)
+    mean = df["reading"].mean()
+    std = df["reading"].std()
+    if pd.isna(std) or std < 3:
+        std = 5.0  # حد أدنى منطقي لتفادي نطاق ضيق جداً بقراءات شبه ثابتة
+    return round(mean, 1), round(std, 1), len(df)
+
+def get_recent_readings(n=TREND_LOOKBACK):
+    """يرجع آخر n قراءات سابقة، من الأقدم إلى الأحدث."""
+    conn = get_conn()
+    df = pd.read_sql_query(
+        "SELECT reading FROM logs WHERE event_type='قراءة سكر' AND reading IS NOT NULL "
+        "ORDER BY id DESC LIMIT ?",
+        conn, params=(n,)
+    )
+    conn.close()
+    return df["reading"].tolist()[::-1]
+
+def detect_danger_trend(readings):
+    """يكشف اتجاه هبوط/صعود متتالي وملحوظ. يرجع 'down' / 'up' / None."""
+    if len(readings) < 3:
+        return None
+    diffs = [readings[i + 1] - readings[i] for i in range(len(readings) - 1)]
+    total_change = readings[-1] - readings[0]
+    down_moves = sum(1 for d in diffs if d < 0)
+    up_moves = sum(1 for d in diffs if d > 0)
+    if down_moves >= len(diffs) - 1 and total_change <= -TREND_MIN_CHANGE:
+        return "down"
+    if up_moves >= len(diffs) - 1 and total_change >= TREND_MIN_CHANGE:
+        return "up"
+    return None
+
+def smart_classify(value):
+    """
+    يرجع (fixed_class, smart_level, explanation):
+    - fixed_class: انخفاض / طبيعي / ارتفاع (العتبة الثابتة كما هي)
+    - smart_level: طبيعي / تنبيه استباقي / خطر مؤكد
+    """
+    fixed_class = classify_sugar(value)
+    if fixed_class != "طبيعي":
+        return fixed_class, "خطر مؤكد", f"القراءة {value} خارج الحدود الطبية الثابتة ({fixed_class})."
+
+    reasons = []
+    is_alert = False
+
+    mean, std, n = get_personal_baseline()
+    if mean is not None:
+        lower, upper = mean - 1.5 * std, mean + 1.5 * std
+        if value < lower or value > upper:
+            is_alert = True
+            reasons.append(f"خارج نطاقك الشخصي المعتاد ({round(lower)}–{round(upper)})")
+
+    prev_readings = get_recent_readings(TREND_LOOKBACK)
+    trend = detect_danger_trend(prev_readings + [value]) if prev_readings else None
+    if trend == "down":
+        is_alert = True
+        reasons.append("اتجاه انخفاض متتالي وملحوظ بآخر القراءات")
+    elif trend == "up":
+        is_alert = True
+        reasons.append("اتجاه ارتفاع متتالي وملحوظ بآخر القراءات")
+
+    if is_alert:
+        return fixed_class, "تنبيه استباقي", " و".join(reasons)
+    return fixed_class, "طبيعي", ""
 
 init_db()
 
@@ -272,16 +363,20 @@ def render_alert_box(title: str, message: str, box_color="#ff4d4d", bg_color="#f
 _recent_logs = load_logs()
 if len(_recent_logs) > 0:
     _last = _recent_logs.iloc[0]
-    _last_class = _last["system_class"]
-    if _last_class in ("طبيعي",):
+    _last_level = _last["smart_level"] if pd.notna(_last["smart_level"]) else _last["system_class"]
+    if _last_level == "طبيعي":
         _card_color, _card_bg, _card_icon = "#1B5E62", "#E7F0EE", "✅"
         _card_text = "الحالة طبيعية"
-    elif _last_class == "فزعة يدوية":
+    elif _last_level == "فزعة يدوية":
         _card_color, _card_bg, _card_icon = "#D5574A", "#FBEAE7", "🆘"
         _card_text = "تم إرسال نداء استغاثة"
+    elif _last_level == "تنبيه استباقي":
+        _card_color, _card_bg, _card_icon = "#B8860B", "#FFF8E1", "🧠"
+        _reason = _last["smart_reason"] if pd.notna(_last["smart_reason"]) else ""
+        _card_text = f"تنبيه استباقي ذكي — {_reason}" if _reason else "تنبيه استباقي ذكي"
     else:
         _card_color, _card_bg, _card_icon = "#D5574A", "#FBEAE7", "⚠️"
-        _card_text = f"تنبيه: {_last_class}"
+        _card_text = f"تنبيه: {_last_level}"
     st.markdown(f"""
         <div style="background-color:{_card_bg}; border:2px solid {_card_color}; border-radius:16px;
                     padding:18px 24px; margin-bottom:20px; display:flex; justify-content:space-between; align-items:center;">
@@ -331,40 +426,63 @@ def classify_sugar(value):
         return "ارتفاع"
 
 st.markdown("### 🩸 تسجيل قراءة سكر الدم")
+
+_baseline_mean, _baseline_std, _baseline_n = get_personal_baseline()
+if _baseline_mean is not None:
+    _lo, _hi = round(_baseline_mean - 1.5*_baseline_std), round(_baseline_mean + 1.5*_baseline_std)
+    st.caption(f"🧠 نطاقك الشخصي المعتاد (بناءً على آخر {_baseline_n} قراءة): {_lo} – {_hi} mg/dL")
+else:
+    st.caption(f"🧠 التعلم الذكي يحتاج {MIN_HISTORY_FOR_BASELINE} قراءات على الأقل ليبدأ بتحديد نطاقك الشخصي (المسجل حالياً: {_baseline_n}).")
+
 manual_val = st.number_input("قراءة سكر الدم (mg/dL)", min_value=20, max_value=600, value=120)
 true_state_manual = st.selectbox("الحالة الفعلية", ["انخفاض", "طبيعي", "ارتفاع"])
 
 if st.button("معالجة وتسجيل القراءة فوراً", use_container_width=True):
     start_time = datetime.now()
-    system_classification = classify_sugar(manual_val)
-    alert_sent = "نعم" if system_classification != "طبيعي" else "لا"
+    fixed_class, smart_level, smart_reason = smart_classify(manual_val)
+    alert_sent = "نعم" if smart_level != "طبيعي" else "لا"
     elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
 
     new_row = {
         "test_id": next_test_id(),
         "reading": manual_val,
         "true_state": true_state_manual,
-        "system_class": system_classification,
+        "system_class": fixed_class,
         "alert_sent": alert_sent,
         "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "alert_ms": round(elapsed_ms, 2),
-        "accuracy": "صحيح" if system_classification == true_state_manual else "خاطئ",
+        "accuracy": "صحيح" if fixed_class == true_state_manual else "خاطئ",
         "event_type": "قراءة سكر",
+        "smart_level": smart_level,
+        "smart_reason": smart_reason,
     }
     insert_log(new_row)
 
-    if system_classification != "طبيعي":
+    if smart_level == "خطر مؤكد":
         auto_alert_text = (
             f"🚨 *تنبيه طوارئ من تطبيق الأب* 🚨\n"
-            f"القراءة المسجلة خطيرة: {manual_val} mg/dL ({system_classification}).\n"
+            f"القراءة المسجلة خطيرة: {manual_val} mg/dL ({fixed_class}).\n"
             f"📍 الموقع: {location_str}"
         )
         render_alert_box(
-            f"🚨 تحذير خطير: القراءة ({system_classification}: {manual_val}) غير طبيعية!",
+            f"🚨 تحذير خطير: القراءة ({fixed_class}: {manual_val}) غير طبيعية!",
             auto_alert_text,
         )
+    elif smart_level == "تنبيه استباقي":
+        auto_alert_text = (
+            f"⚠️ *تنبيه استباقي ذكي من تطبيق الأب* ⚠️\n"
+            f"القراءة {manual_val} mg/dL ضمن الحدود الثابتة، لكن النظام لاحظ نمطاً يستدعي الانتباه:\n"
+            f"السبب: {smart_reason}\n"
+            f"📍 الموقع: {location_str}"
+        )
+        render_alert_box(
+            f"⚠️ تنبيه استباقي: {smart_reason}",
+            auto_alert_text,
+            box_color="#d4a017",
+            bg_color="#fffbea",
+        )
     else:
-        st.success("✅ تمت معالجة وتسجيل القراءة بنجاح (الحالة طبيعية).")
+        st.success("✅ تمت معالجة وتسجيل القراءة بنجاح (الحالة طبيعية، ولا يوجد نمط يستدعي القلق).")
 
 # ------------------------------------------------------------
 # السجل التفصيلي (مطوي افتراضياً - للاطلاع التقني فقط)

@@ -15,6 +15,54 @@ import requests
 
 st.set_page_config(page_title="تطبيق الأب - سند", layout="wide")
 
+# ------------------------------------------------------------
+# تنسيق بصري مخصص بهوية «سند» - خط أكبر، أزرار أوضح، SOS نابض
+# ------------------------------------------------------------
+st.markdown("""
+<style>
+    html, body, [class*="css"]  {
+        font-size: 18px !important;
+    }
+    h1 { font-size: 34px !important; }
+    h3 { font-size: 24px !important; }
+
+    /* زر الفزعة (SOS) - كبير، أحمر، نابض */
+    div.stButton > button[kind="primary"] {
+        background-color: #D5574A;
+        color: white;
+        font-size: 28px !important;
+        font-weight: bold;
+        padding: 26px 20px;
+        border-radius: 18px;
+        border: none;
+        width: 100%;
+        animation: sanad-pulse 2s infinite;
+    }
+    @keyframes sanad-pulse {
+        0%   { box-shadow: 0 0 0 0 rgba(213,87,74,0.55); }
+        70%  { box-shadow: 0 0 0 22px rgba(213,87,74,0); }
+        100% { box-shadow: 0 0 0 0 rgba(213,87,74,0); }
+    }
+
+    /* الأزرار العادية - أكبر وأوضح للمس السهل */
+    div.stButton > button[kind="secondary"] {
+        font-size: 19px !important;
+        padding: 16px !important;
+        border-radius: 14px !important;
+        border: 2px solid #16403f !important;
+    }
+
+    /* حقول الإدخال - خط أكبر */
+    [data-testid="stNumberInput"] input, [data-testid="stTextInput"] input {
+        font-size: 20px !important;
+        padding: 12px !important;
+    }
+    [data-testid="stSelectbox"] div[data-baseweb="select"] {
+        font-size: 20px !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 st.title("🛡️ نظام «سند» - تطبيق الأب")
 st.markdown("لوحة تسجيل البيانات وحالات الطوارئ المباشرة.")
 
@@ -218,6 +266,34 @@ def render_alert_box(title: str, message: str, box_color="#ff4d4d", bg_color="#f
 # ------------------------------------------------------------
 # 3) زر الفزعة الطارئة (SOS) - فوري ولا يحتاج قراءة سكر
 # ------------------------------------------------------------
+# ------------------------------------------------------------
+# بطاقة "آخر حالة" - ملخص مبسّط وواضح لكبار السن والعائلة
+# ------------------------------------------------------------
+_recent_logs = load_logs()
+if len(_recent_logs) > 0:
+    _last = _recent_logs.iloc[0]
+    _last_class = _last["system_class"]
+    if _last_class in ("طبيعي",):
+        _card_color, _card_bg, _card_icon = "#1B5E62", "#E7F0EE", "✅"
+        _card_text = "الحالة طبيعية"
+    elif _last_class == "فزعة يدوية":
+        _card_color, _card_bg, _card_icon = "#D5574A", "#FBEAE7", "🆘"
+        _card_text = "تم إرسال نداء استغاثة"
+    else:
+        _card_color, _card_bg, _card_icon = "#D5574A", "#FBEAE7", "⚠️"
+        _card_text = f"تنبيه: {_last_class}"
+    st.markdown(f"""
+        <div style="background-color:{_card_bg}; border:2px solid {_card_color}; border-radius:16px;
+                    padding:18px 24px; margin-bottom:20px; display:flex; justify-content:space-between; align-items:center;">
+            <div>
+                <span style="font-size:22px; font-weight:bold; color:{_card_color};">{_card_icon} آخر حالة: {_card_text}</span><br>
+                <span style="font-size:15px; color:#555;">وقت آخر تسجيل: {_last['processed_at']}</span>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+else:
+    st.info("لا توجد قراءات مسجلة بعد.")
+
 st.markdown("### 🆘 الفزعة الطارئة")
 sos_col1, sos_col2 = st.columns([1, 3])
 with sos_col1:
@@ -291,12 +367,12 @@ if st.button("معالجة وتسجيل القراءة فوراً", use_containe
         st.success("✅ تمت معالجة وتسجيل القراءة بنجاح (الحالة طبيعية).")
 
 # ------------------------------------------------------------
-# السجل الحالي (من قاعدة البيانات - يبقى محفوظاً دائماً)
+# السجل التفصيلي (مطوي افتراضياً - للاطلاع التقني فقط)
 # ------------------------------------------------------------
-st.markdown("### 📋 السجل الحالي:")
-logs_df = load_logs()
-st.dataframe(logs_df, use_container_width=True)
+with st.expander("📋 عرض السجل التفصيلي الكامل"):
+    logs_df = load_logs()
+    st.dataframe(logs_df, use_container_width=True)
 
-if len(logs_df) > 0:
-    csv = logs_df.to_csv(index=False).encode("utf-8-sig")
-    st.download_button("⬇️ تنزيل السجل كملف CSV", data=csv, file_name="sanad_logs.csv", mime="text/csv")
+    if len(logs_df) > 0:
+        csv = logs_df.to_csv(index=False).encode("utf-8-sig")
+        st.download_button("⬇️ تنزيل السجل كملف CSV", data=csv, file_name="sanad_logs.csv", mime="text/csv")

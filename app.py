@@ -1,34 +1,176 @@
 from datetime import datetime
+import sqlite3
 import pandas as pd
 import streamlit as st
 import urllib.parse
 
-st.set_page_config(page_title="تطبيق الأب - سكر راصد", layout="wide")
+# ============================================================
+#  نظام «سند» - تطبيق الأب
+#  التحديثات الجديدة في هذه النسخة:
+#   1) زر فزعة (SOS) يدوي فوري - لا يحتاج قراءة سكر
+#   2) قاعدة بيانات SQLite حقيقية - البيانات ما تضيع بعد التحديث
+#   3) موقع GPS حقيقي من متصفح الجهاز (بدل الإحداثيات الثابتة)
+# ============================================================
+
+st.set_page_config(page_title="تطبيق الأب - سند", layout="wide")
 
 st.title("🛡️ نظام «سند» - تطبيق الأب")
 st.markdown("لوحة تسجيل البيانات وحالات الطوارئ المباشرة.")
 
-# ثوابت النظام ورقام التواصل
+# ------------------------------------------------------------
+# الثوابت
+# ------------------------------------------------------------
 father_phone = "0509036511"
-default_lat = "24.549513"
+default_lat = "24.549513"   # يُستخدم فقط إذا تعذّر الحصول على GPS حقيقي
 default_lon = "44.377016"
-location_str = f"https://maps.google.com/?q={default_lat},{default_lon}"
+DB_PATH = "sanad.db"
 
-if "logs" not in st.session_state:
-    st.session_state.logs = pd.DataFrame(
-        columns=[
-            "رقم الاختبار", "قراءة السكر (mg/dL)", "الحالة الفعلية (المرجعية)",
-            "تصنيف النظام", "هل تم إرسال تنبيه؟", "وقت معالجة القراءة",
-            "زمن إرسال التنبيه (مللي ثانية)", "دقة التصنيف"
-        ]
-    )
+# ------------------------------------------------------------
+# 1) قاعدة البيانات - SQLite (تحل محل session_state المؤقت)
+# ------------------------------------------------------------
+def get_conn():
+    return sqlite3.connect(DB_PATH, check_same_thread=False)
 
+def init_db():
+    conn = get_conn()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            test_id TEXT,
+            reading REAL,
+            true_state TEXT,
+            system_class TEXT,
+            alert_sent TEXT,
+            processed_at TEXT,
+            alert_ms REAL,
+            accuracy TEXT,
+            event_type TEXT DEFAULT 'قراءة سكر'
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def insert_log(row: dict):
+    conn = get_conn()
+    conn.execute("""
+        INSERT INTO logs (test_id, reading, true_state, system_class, alert_sent,
+                           processed_at, alert_ms, accuracy, event_type)
+        VALUES (:test_id, :reading, :true_state, :system_class, :alert_sent,
+                :processed_at, :alert_ms, :accuracy, :event_type)
+    """, row)
+    conn.commit()
+    conn.close()
+
+def load_logs() -> pd.DataFrame:
+    conn = get_conn()
+    df = pd.read_sql_query("SELECT * FROM logs ORDER BY id DESC", conn)
+    conn.close()
+    return df
+
+def next_test_id() -> str:
+    conn = get_conn()
+    count = conn.execute("SELECT COUNT(*) FROM logs").fetchone()[0]
+    conn.close()
+    return f"TEST-{count + 1:03d}"
+
+init_db()
+
+# ------------------------------------------------------------
+# 2) الموقع الجغرافي الحقيقي (GPS من المتصفح)
+#    يتطلب تثبيت الحزمة:  pip install streamlit-js-eval
+#    إذا لم تكن الحزمة مثبتة أو رفض المستخدم إذن الموقع،
+#    يرجع النظام تلقائياً للإحداثيات الافتراضية بدون أي خطأ.
+# ------------------------------------------------------------
+def get_live_location():
+    try:
+        from streamlit_js_eval import get_geolocation
+        loc = get_geolocation()
+        if loc and "coords" in loc:
+            lat = loc["coords"]["latitude"]
+            lon = loc["coords"]["longitude"]
+            return str(lat), str(lon), True
+    except ModuleNotFoundError:
+        st.sidebar.warning(
+            "⚠️ لتفعيل الموقع الحقيقي: أضف السطر التالي إلى requirements.txt\n\n"
+            "streamlit-js-eval"
+        )
+    except Exception:
+        pass
+    return default_lat, default_lon, False
+
+live_lat, live_lon, is_live_gps = get_live_location()
+location_str = f"https://maps.google.com/?q={live_lat},{live_lon}"
+
+# ------------------------------------------------------------
+# الشريط الجانبي
+# ------------------------------------------------------------
 st.sidebar.subheader("⚙️ إعدادات الطوارئ والاتصال")
 target_phone = st.sidebar.text_input("رقم طوارئ الابن (واتساب)", value="966500000000")
 st.sidebar.markdown("---")
 st.sidebar.info(f"📱 جوال الأب المسجل: {father_phone}")
 st.sidebar.error("🚨 رقم الإسعاف السعودي المعتمد: 997")
+st.sidebar.markdown("---")
+if is_live_gps:
+    st.sidebar.success(f"📍 الموقع الحالي (GPS حقيقي): {live_lat}, {live_lon}")
+else:
+    st.sidebar.warning(f"📍 موقع افتراضي (تجريبي): {live_lat}, {live_lon}")
 
+# ------------------------------------------------------------
+# دالة مساعدة: بناء روابط التنبيه (واتساب + اتصال)
+# ------------------------------------------------------------
+def build_alert_links(message: str):
+    encoded = urllib.parse.quote(message)
+    whatsapp_url = f"https://wa.me/{target_phone}?text={encoded}"
+    return whatsapp_url
+
+def render_alert_box(title: str, message: str, box_color="#ff4d4d", bg_color="#fff5f5"):
+    whatsapp_url = build_alert_links(message)
+    st.markdown(f"""
+        <div style="background-color:{bg_color}; padding:20px; border-radius:12px; border:2px solid {box_color}; text-align:center; margin-bottom:15px;">
+            <h3 style="color:#cc0000; margin-top:0;">{title}</h3>
+            <p style="font-size:16px; margin-bottom:15px;">يمكنك التواصل السريع مع الابن أو طلب الإسعاف السعودي المباشر فوراً:</p>
+            <div style="display: flex; justify-content: center; gap: 15px; flex-wrap: wrap;">
+                <a href="{whatsapp_url}" target="_blank" style="background-color:#25D366; color:white; padding:12px 20px; text-decoration:none; font-size:16px; font-weight:bold; border-radius:8px; display:inline-block;">
+                    💬 إرسال تنبيه للابن عبر الواتساب
+                </a>
+                <a href="tel:997" style="background-color:#cc0000; color:white; padding:12px 20px; text-decoration:none; font-size:16px; font-weight:bold; border-radius:8px; display:inline-block;">
+                    🚑 الاتصال الفوري بالإسعاف (997)
+                </a>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+# ------------------------------------------------------------
+# 3) زر الفزعة الطارئة (SOS) - فوري ولا يحتاج قراءة سكر
+# ------------------------------------------------------------
+st.markdown("### 🆘 الفزعة الطارئة")
+sos_col1, sos_col2 = st.columns([1, 3])
+with sos_col1:
+    sos_clicked = st.button("🆘 نداء استغاثة فورية", type="primary", use_container_width=True)
+with sos_col2:
+    st.caption("اضغط هذا الزر في أي وقت لإرسال نداء طوارئ فوري بدون الحاجة لتسجيل قراءة سكر.")
+
+if sos_clicked:
+    sos_row = {
+        "test_id": next_test_id(),
+        "reading": None,
+        "true_state": "-",
+        "system_class": "فزعة يدوية",
+        "alert_sent": "نعم",
+        "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "alert_ms": None,
+        "accuracy": "-",
+        "event_type": "زر SOS",
+    }
+    insert_log(sos_row)
+    sos_message = f"🆘 *نداء استغاثة فورية من تطبيق الأب* 🆘\nتم الضغط على زر الفزعة الطارئة.\n📍 الموقع: {location_str}"
+    render_alert_box("🆘 تم إرسال نداء استغاثة فورية!", sos_message)
+
+st.markdown("---")
+
+# ------------------------------------------------------------
+# تسجيل قراءة السكر يدوياً
+# ------------------------------------------------------------
 def classify_sugar(value):
     if value < 75:
         return "انخفاض"
@@ -37,48 +179,49 @@ def classify_sugar(value):
     else:
         return "ارتفاع"
 
+st.markdown("### 🩸 تسجيل قراءة سكر الدم")
 manual_val = st.number_input("قراءة سكر الدم (mg/dL)", min_value=20, max_value=600, value=120)
 true_state_manual = st.selectbox("الحالة الفعلية", ["انخفاض", "طبيعي", "ارتفاع"])
 
 if st.button("معالجة وتسجيل القراءة فوراً", use_container_width=True):
+    start_time = datetime.now()
     system_classification = classify_sugar(manual_val)
     alert_sent = "نعم" if system_classification != "طبيعي" else "لا"
-    
+    elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
+
     new_row = {
-        "رقم الاختبار": f"TEST-{len(st.session_state.logs)+1:03d}",
-        "قراءة السكر (mg/dL)": manual_val,
-        "الحالة الفعلية (المرجعية)": true_state_manual,
-        "تصنيف النظام": system_classification,
-        "هل تم إرسال تنبيه؟": alert_sent,
-        "وقت معالجة القراءة": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "زمن إرسال التنبيه (مللي ثانية)": 50.0,
-        "دقة التصنيف": "صحيح" if system_classification == true_state_manual else "خاطئ"
+        "test_id": next_test_id(),
+        "reading": manual_val,
+        "true_state": true_state_manual,
+        "system_class": system_classification,
+        "alert_sent": alert_sent,
+        "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "alert_ms": round(elapsed_ms, 2),
+        "accuracy": "صحيح" if system_classification == true_state_manual else "خاطئ",
+        "event_type": "قراءة سكر",
     }
-    
-    st.session_state.logs = pd.concat([st.session_state.logs, pd.DataFrame([new_row])], ignore_index=True)
-    
-    # تنبيهات الطوارئ الفورية إذا كانت القراءة غير طبيعية
+    insert_log(new_row)
+
     if system_classification != "طبيعي":
-        auto_alert_text = f"🚨 *تنبيه طوارئ من تطبيق الأب* 🚨\nالقراءة المسجلة خطيرة: {manual_val} mg/dL ({system_classification}).\n📍 الموقع: {location_str}"
-        encoded_auto = urllib.parse.quote(auto_alert_text)
-        whatsapp_url = f"https://wa.me/{target_phone}?text={encoded_auto}"
-        
-        st.markdown(f"""
-            <div style="background-color:#fff5f5; padding:20px; border-radius:12px; border:2px solid #ff4d4d; text-align:center; margin-bottom:15px;">
-                <h3 style="color:#cc0000; margin-top:0;">🚨 تحذير خطير: القراءة ({system_classification}: {manual_val}) غير طبيعية!</h3>
-                <p style="font-size:16px; margin-bottom:15px;">يمكنك التواصل السريع مع الابن أو طلب الإسعاف السعودي المباشر فوراً:</p>
-                <div style="display: flex; justify-content: center; gap: 15px; flex-wrap: wrap;">
-                    <a href="{whatsapp_url}" target="_blank" style="background-color:#25D366; color:white; padding:12px 20px; text-decoration:none; font-size:16px; font-weight:bold; border-radius:8px; display:inline-block;">
-                        💬 إرسال تنبيه للابن عبر الواتساب
-                    </a>
-                    <a href="tel:997" style="background-color:#cc0000; color:white; padding:12px 20px; text-decoration:none; font-size:16px; font-weight:bold; border-radius:8px; display:inline-block;">
-                        🚑 الاتصال الفوري بالإسعاف (997)
-                    </a>
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
+        auto_alert_text = (
+            f"🚨 *تنبيه طوارئ من تطبيق الأب* 🚨\n"
+            f"القراءة المسجلة خطيرة: {manual_val} mg/dL ({system_classification}).\n"
+            f"📍 الموقع: {location_str}"
+        )
+        render_alert_box(
+            f"🚨 تحذير خطير: القراءة ({system_classification}: {manual_val}) غير طبيعية!",
+            auto_alert_text,
+        )
     else:
         st.success("✅ تمت معالجة وتسجيل القراءة بنجاح (الحالة طبيعية).")
 
-st.markdown("### السجل الحالي:")
-st.dataframe(st.session_state.logs, use_container_width=True)
+# ------------------------------------------------------------
+# السجل الحالي (من قاعدة البيانات - يبقى محفوظاً دائماً)
+# ------------------------------------------------------------
+st.markdown("### 📋 السجل الحالي:")
+logs_df = load_logs()
+st.dataframe(logs_df, use_container_width=True)
+
+if len(logs_df) > 0:
+    csv = logs_df.to_csv(index=False).encode("utf-8-sig")
+    st.download_button("⬇️ تنزيل السجل كملف CSV", data=csv, file_name="sanad_logs.csv", mime="text/csv")

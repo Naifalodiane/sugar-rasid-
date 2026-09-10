@@ -1,9 +1,13 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import sqlite3
 import pandas as pd
 import streamlit as st
 import urllib.parse
 import requests
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 
 # ============================================================
 #  نظام «سند» - تطبيق الأب
@@ -216,6 +220,180 @@ def smart_classify(value):
 init_db()
 
 # ------------------------------------------------------------
+# 6) الرسم البياني لتطور القراءات + نطاق الأساس الشخصي
+# ------------------------------------------------------------
+def render_history_chart():
+    conn = get_conn()
+    df = pd.read_sql_query(
+        "SELECT reading, processed_at, smart_level FROM logs "
+        "WHERE event_type='قراءة سكر' AND reading IS NOT NULL "
+        "ORDER BY id DESC LIMIT 20",
+        conn
+    )
+    conn.close()
+    if len(df) < 2:
+        st.info("سجّل قراءتين على الأقل ليظهر الرسم البياني.")
+        return
+
+    df = df.iloc[::-1].reset_index(drop=True)  # من الأقدم إلى الأحدث
+    mean, std, n = get_personal_baseline()
+
+    fig, ax = plt.subplots(figsize=(9, 3.2))
+    x = range(len(df))
+
+    if mean is not None:
+        lower, upper = mean - 1.5 * std, mean + 1.5 * std
+        ax.axhspan(lower, upper, color="#1B5E62", alpha=0.12, label=None)
+        ax.axhline(mean, color="#1B5E62", linestyle="--", linewidth=1, alpha=0.5)
+
+    point_colors = []
+    for lvl in df["smart_level"]:
+        if lvl == "خطر مؤكد":
+            point_colors.append("#D5574A")
+        elif lvl == "تنبيه استباقي":
+            point_colors.append("#D4A017")
+        else:
+            point_colors.append("#1B5E62")
+
+    ax.plot(x, df["reading"], color="#163A3E", linewidth=1.5, zorder=1)
+    ax.scatter(x, df["reading"], c=point_colors, s=55, zorder=2, edgecolors="white", linewidths=1)
+
+    ax.set_ylabel("mg/dL", fontsize=10)
+    ax.set_xticks(list(x))
+    ax.set_xticklabels([str(i + 1) for i in x], fontsize=8)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.grid(axis="y", alpha=0.25)
+    fig.tight_layout()
+
+    st.pyplot(fig)
+    plt.close(fig)
+
+    st.markdown("""
+        <div style="display:flex; gap:22px; font-size:13px; margin-top:-10px;">
+            <span>🟢 طبيعي</span>
+            <span>🟡 تنبيه استباقي</span>
+            <span>🔴 خطر مؤكد</span>
+            <span style="color:#888;">▬ ▬ نطاق الأساس الشخصي المظلّل</span>
+        </div>
+    """, unsafe_allow_html=True)
+
+# ------------------------------------------------------------
+# 7) تذكير الأدوية والجرعات
+# ------------------------------------------------------------
+def init_medications_db():
+    conn = get_conn()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS medications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT, dose TEXT, time_of_day TEXT, created_at TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS medication_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            medication_id INTEGER, log_date TEXT, taken_at TEXT,
+            reminder_sent INTEGER DEFAULT 0
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def add_medication(name, dose, time_str):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO medications (name, dose, time_of_day, created_at) VALUES (?, ?, ?, ?)",
+        (name, dose, time_str, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    )
+    conn.commit()
+    conn.close()
+
+def get_medications():
+    conn = get_conn()
+    df = pd.read_sql_query("SELECT * FROM medications ORDER BY time_of_day", conn)
+    conn.close()
+    return df
+
+def delete_medication(med_id):
+    med_id = int(med_id)
+    conn = get_conn()
+    conn.execute("DELETE FROM medications WHERE id = ?", (med_id,))
+    conn.execute("DELETE FROM medication_logs WHERE medication_id = ?", (med_id,))
+    conn.commit()
+    conn.close()
+
+def get_or_create_today_log(med_id):
+    med_id = int(med_id)
+    today = datetime.now().strftime("%Y-%m-%d")
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM medication_logs WHERE medication_id = ? AND log_date = ?",
+        (med_id, today)
+    ).fetchone()
+    if row is None:
+        conn.execute(
+            "INSERT INTO medication_logs (medication_id, log_date, taken_at, reminder_sent) VALUES (?, ?, NULL, 0)",
+            (med_id, today)
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM medication_logs WHERE medication_id = ? AND log_date = ?",
+            (med_id, today)
+        ).fetchone()
+    conn.close()
+    return row  # (id, medication_id, log_date, taken_at, reminder_sent)
+
+def mark_taken(log_id):
+    log_id = int(log_id)
+    conn = get_conn()
+    conn.execute(
+        "UPDATE medication_logs SET taken_at = ? WHERE id = ?",
+        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), log_id)
+    )
+    conn.commit()
+    conn.close()
+
+def mark_reminder_sent(log_id):
+    log_id = int(log_id)
+    conn = get_conn()
+    conn.execute("UPDATE medication_logs SET reminder_sent = 1 WHERE id = ?", (log_id,))
+    conn.commit()
+    conn.close()
+
+MED_GRACE_MINUTES = 60  # مهلة السماح قبل اعتبار الجرعة متأخرة
+
+def check_overdue_and_alert(telegram_token, telegram_chat_id, location_str):
+    """يفحص كل أدوية اليوم، ولو تجاوزت موعدها + المهلة بدون تسجيل أخذ، يرسل تنبيه تلقائي مرة واحدة."""
+    meds = get_medications()
+    now = datetime.now()
+    alerts_sent = []
+    for _, med in meds.iterrows():
+        log = get_or_create_today_log(med["id"])
+        log_id, _, _, taken_at, reminder_sent = log
+        if taken_at is not None or reminder_sent:
+            continue
+        try:
+            sched_h, sched_m = map(int, med["time_of_day"].split(":"))
+        except Exception:
+            continue
+        scheduled_dt = now.replace(hour=sched_h, minute=sched_m, second=0, microsecond=0)
+        overdue_minutes = (now - scheduled_dt).total_seconds() / 60
+        if overdue_minutes >= MED_GRACE_MINUTES:
+            msg = (
+                f"💊 *تذكير فائت من تطبيق الأب* 💊\n"
+                f"لم يتم تسجيل أخذ دواء «{med['name']}» ({med['dose']}) "
+                f"المقرر الساعة {med['time_of_day']}.\n"
+                f"📍 الموقع: {location_str}"
+            )
+            ok, _ = send_telegram_alert(telegram_token, telegram_chat_id, msg)
+            if ok:
+                mark_reminder_sent(log_id)
+                alerts_sent.append(med["name"])
+    return alerts_sent
+
+init_medications_db()
+
+# ------------------------------------------------------------
 # 2) الموقع الجغرافي الحقيقي (GPS من المتصفح)
 #    يتطلب تثبيت الحزمة:  pip install streamlit-js-eval
 #    إذا لم تكن الحزمة مثبتة أو رفض المستخدم إذن الموقع،
@@ -322,6 +500,11 @@ if is_live_gps:
 else:
     st.sidebar.warning(f"📍 موقع افتراضي (تجريبي): {live_lat}, {live_lon}")
 
+# فحص صامت لأي دواء فات موعده دون تسجيل + إرسال تنبيه تلقائي عند اللزوم
+_overdue_alerts = check_overdue_and_alert(telegram_token, telegram_chat_id, location_str)
+if _overdue_alerts:
+    st.warning("⏰ تم إرسال تنبيه تلقائي بخصوص تأخّر أخذ: " + "، ".join(_overdue_alerts))
+
 # ------------------------------------------------------------
 # دالة مساعدة: بناء روابط التنبيه (واتساب + اتصال)
 # ------------------------------------------------------------
@@ -388,6 +571,9 @@ if len(_recent_logs) > 0:
     """, unsafe_allow_html=True)
 else:
     st.info("لا توجد قراءات مسجلة بعد.")
+
+st.markdown("### 📈 سجل القراءات وتطورها")
+render_history_chart()
 
 st.markdown("### 🆘 الفزعة الطارئة")
 sos_col1, sos_col2 = st.columns([1, 3])
@@ -483,6 +669,52 @@ if st.button("معالجة وتسجيل القراءة فوراً", use_containe
         )
     else:
         st.success("✅ تمت معالجة وتسجيل القراءة بنجاح (الحالة طبيعية، ولا يوجد نمط يستدعي القلق).")
+
+st.markdown("---")
+
+# ------------------------------------------------------------
+# واجهة تذكير الأدوية والجرعات
+# ------------------------------------------------------------
+st.markdown("### 💊 تذكير الأدوية والجرعات")
+
+with st.expander("➕ إضافة دواء جديد"):
+    with st.form("add_med_form", clear_on_submit=True):
+        med_name = st.text_input("اسم الدواء")
+        med_dose = st.text_input("الجرعة (مثال: حبة واحدة)")
+        med_time = st.time_input("موعد الجرعة اليومي")
+        submitted = st.form_submit_button("إضافة الدواء")
+        if submitted:
+            if med_name.strip():
+                add_medication(med_name.strip(), med_dose.strip(), med_time.strftime("%H:%M"))
+                st.success(f"تمت إضافة دواء «{med_name}» بنجاح.")
+                st.rerun()
+            else:
+                st.error("الرجاء إدخال اسم الدواء.")
+
+meds_df = get_medications()
+if len(meds_df) == 0:
+    st.caption("لا توجد أدوية مسجلة بعد. أضف أول دواء من الأعلى.")
+else:
+    st.markdown(f"**أدوية اليوم ({datetime.now().strftime('%Y-%m-%d')}):**")
+    for _, med in meds_df.iterrows():
+        log = get_or_create_today_log(med["id"])
+        log_id, _, _, taken_at, reminder_sent = log
+        col1, col2, col3 = st.columns([3, 1, 1])
+        with col1:
+            status_icon = "✅" if taken_at else ("⏰" if reminder_sent else "⏳")
+            label = f"{status_icon} **{med['name']}** ({med['dose']}) — الساعة {med['time_of_day']}"
+            if taken_at:
+                label += f"  \n*تم الأخذ الساعة {taken_at.split(' ')[1]}*"
+            st.markdown(label)
+        with col2:
+            if not taken_at:
+                if st.button("تم أخذه", key=f"take_{med['id']}"):
+                    mark_taken(log_id)
+                    st.rerun()
+        with col3:
+            if st.button("حذف", key=f"del_{med['id']}"):
+                delete_medication(med["id"])
+                st.rerun()
 
 # ------------------------------------------------------------
 # السجل التفصيلي (مطوي افتراضياً - للاطلاع التقني فقط)

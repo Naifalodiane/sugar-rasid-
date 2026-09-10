@@ -143,8 +143,36 @@ with st.sidebar.expander("ℹ️ كيف أحصل على التوكن ومعرف 
       `https://api.telegram.org/botTOKEN/getUpdates`
     - بتلاقي `"chat":{"id": 123456789 ...}` — هذا الرقم هو الـ Chat ID
     """)
-telegram_token = st.sidebar.text_input("توكن البوت (Bot Token)", type="password")
-telegram_chat_id = st.sidebar.text_input("معرف محادثة الابن (Chat ID)")
+try:
+    telegram_token = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
+    telegram_chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "")
+except Exception:
+    telegram_token = ""
+    telegram_chat_id = ""
+
+if telegram_token and telegram_chat_id:
+    st.sidebar.success("🔒 توكن البوت ومعرف المحادثة محفوظين بشكل دائم (Secrets)")
+    with st.sidebar.expander("تعديل القيم المحفوظة؟"):
+        st.caption("عدّلها من إعدادات Secrets في لوحة تحكم Streamlit Cloud مباشرة (أدق من الكتابة هنا في كل مرة).")
+else:
+    st.sidebar.warning("⚠️ لم يتم حفظ التوكن بعد بشكل دائم — أدخله الآن، وراجع الشرح تحت لحفظه نهائياً.")
+    telegram_token = st.sidebar.text_input("توكن البوت (Bot Token) - مؤقت", type="password", value=telegram_token)
+    telegram_chat_id = st.sidebar.text_input("معرف محادثة الابن (Chat ID) - مؤقت", value=telegram_chat_id)
+    with st.sidebar.expander("💾 كيف أحفظهم بشكل دائم ولا يروحون بعد التحديث؟"):
+        st.markdown("""
+        **إذا تطبيقك على Streamlit Cloud:**
+        1. افتح [share.streamlit.io](https://share.streamlit.io) ولقِ تطبيقك
+        2. اضغط القائمة (⋮) بجنب التطبيق ← **Settings** ← **Secrets**
+        3. الصق هذا بالضبط (بقيمك الحقيقية):
+        ```
+        TELEGRAM_BOT_TOKEN = "8879255452:AAETJet4SR8UdIQdfyh7oD7unDx25jPaO74"
+        TELEGRAM_CHAT_ID = "7026633810"
+        ```
+        4. احفظ (Save) — التطبيق يعيد التشغيل تلقائياً ويصير يقرأهم دايماً من نفسه
+
+        **إذا تشغّله محلياً على جهازك:**
+        أنشئ ملف `.streamlit/secrets.toml` بنفس مجلد المشروع وحط فيه نفس السطرين أعلاه.
+        """)
 
 st.sidebar.markdown("---")
 st.sidebar.info(f"📱 جوال الأب المسجل: {father_phone}")

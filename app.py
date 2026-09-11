@@ -501,9 +501,13 @@ def _pdf_fonts_available():
     return os.path.exists(FONT_REGULAR) and os.path.exists(FONT_BOLD)
 
 def generate_weekly_pdf_report(patient_name: str, report: dict) -> str:
-    """يبني تقرير PDF من صفحة أو صفحتين، ويرجع مسار الملف الناتج."""
+    """يبني تقرير PDF من صفحة أو صفحتين، ويرجع مسار الملف الناتج.
+    يستخدم arabic_reshaper + python-bidi لتشكيل النص العربي (بدل raqm) لأنها
+    مكتبات بايثون خالصة بدون اعتماد على مكونات نظام قد لا تتوفر على كل سيرفر."""
     from PIL import Image, ImageDraw, ImageFont
     import img2pdf
+    import arabic_reshaper
+    from bidi.algorithm import get_display
 
     DPI = 200
     PAGE_W, PAGE_H = int(8.27 * DPI), int(11.69 * DPI)
@@ -520,15 +524,25 @@ def generate_weekly_pdf_report(patient_name: str, report: dict) -> str:
     def font(path, size):
         key = (path, size)
         if key not in _font_cache:
-            _font_cache[key] = ImageFont.truetype(path, size, layout_engine=ImageFont.Layout.RAQM)
+            _font_cache[key] = ImageFont.truetype(path, size)  # طبقة عرض أساسية، بدون raqm
         return _font_cache[key]
 
-    def wrap(draw, text, f, max_w):
+    def shape(text):
+        """يحوّل النص العربي المنطقي إلى شكل بصري جاهز للرسم مباشرة بدون raqm."""
+        reshaped = arabic_reshaper.reshape(str(text))
+        return get_display(reshaped)
+
+    def rtext(draw, xy, text, f, fill, anchor="ra"):
+        """يرسم نصاً عربياً/مختلطاً بشكل صحيح بصرياً (تشكيل + إعادة ترتيب)."""
+        draw.text(xy, shape(text), font=f, fill=fill, anchor=anchor)
+
+    def rwrap(draw, text, f, max_w):
+        """يلف النص على أسطر بالاعتماد على القياس بعد التشكيل (العرض الفعلي)."""
         words = str(text).split(" ")
         lines, cur = [], ""
         for w in words:
             trial = (cur + " " + w).strip() if cur else w
-            if draw.textlength(trial, font=f, direction="rtl", language="ar") <= max_w or not cur:
+            if draw.textlength(shape(trial), font=f) <= max_w or not cur:
                 cur = trial
             else:
                 lines.append(cur); cur = w
@@ -538,11 +552,11 @@ def generate_weekly_pdf_report(patient_name: str, report: dict) -> str:
     def draw_para(draw, text, f, top, right, max_w, fill=DARK, lh=None, align="right"):
         lh = lh or f.size * 1.6
         y = top
-        for line in wrap(draw, text, f, max_w):
+        for line in rwrap(draw, text, f, max_w):
             if align == "right":
-                draw.text((right, y), line, font=f, fill=fill, direction="rtl", language="ar", anchor="ra")
+                rtext(draw, (right, y), line, f, fill, anchor="ra")
             else:
-                draw.text((right - max_w/2, y), line, font=f, fill=fill, direction="rtl", language="ar", anchor="ma")
+                rtext(draw, (right - max_w/2, y), line, f, fill, anchor="ma")
             y += lh
         return y
 
@@ -554,25 +568,20 @@ def generate_weekly_pdf_report(patient_name: str, report: dict) -> str:
     d.rectangle([0, 0, PAGE_W, 12], fill=TEAL)
 
     y = 90
-    d.text((RIGHT, y), "التقرير الصحي الأسبوعي", font=font(FONT_BOLD, 34), fill=NAVY,
-            direction="rtl", language="ar", anchor="ra")
+    rtext(d, (RIGHT, y), "التقرير الصحي الأسبوعي", font(FONT_BOLD, 34), NAVY)
     y += 55
-    d.text((RIGHT, y), "نظام سند — SANAD", font=font(FONT_REGULAR, 16), fill=TEAL,
-            direction="rtl", language="ar", anchor="ra")
+    rtext(d, (RIGHT, y), "نظام سند — SANAD", font(FONT_REGULAR, 16), TEAL)
     y += 60
     d.line([(LEFT, y), (RIGHT, y)], fill=BORDER, width=2)
     y += 35
 
     period_start = (_dt.now() - timedelta(days=report["period_days"])).strftime("%Y-%m-%d")
     period_end = _dt.now().strftime("%Y-%m-%d")
-    d.text((RIGHT, y), f"اسم المريض: {patient_name}", font=font(FONT_BOLD, 20), fill=DARK,
-            direction="rtl", language="ar", anchor="ra")
+    rtext(d, (RIGHT, y), f"اسم المريض: {patient_name}", font(FONT_BOLD, 20), DARK)
     y += 34
-    d.text((RIGHT, y), f"الفترة: من {period_start} إلى {period_end}", font=font(FONT_REGULAR, 16), fill=MUTED,
-            direction="rtl", language="ar", anchor="ra")
+    rtext(d, (RIGHT, y), f"الفترة: من {period_start} إلى {period_end}", font(FONT_REGULAR, 16), MUTED)
     y += 34
-    d.text((RIGHT, y), f"تاريخ إنشاء التقرير: {_dt.now().strftime('%Y-%m-%d %H:%M')}", font=font(FONT_REGULAR, 13), fill=MUTED,
-            direction="rtl", language="ar", anchor="ra")
+    rtext(d, (RIGHT, y), f"تاريخ إنشاء التقرير: {_dt.now().strftime('%Y-%m-%d %H:%M')}", font(FONT_REGULAR, 13), MUTED)
     y += 55
 
     # ملخص عددي
@@ -589,17 +598,16 @@ def generate_weekly_pdf_report(patient_name: str, report: dict) -> str:
         x1 = RIGHT - i * (cw + gap); x0 = x1 - cw
         d.rounded_rectangle([x0, y, x1, y + ch], 16, fill=CARD, outline=BORDER, width=2)
         d.text(((x0+x1)/2, y+55), num, font=font(FONT_BOLD, 34), fill=color, anchor="mm")
-        for li, line in enumerate(wrap(d, label, font(FONT_REGULAR, 13), cw-24)):
-            d.text(((x0+x1)/2, y+95+li*20), line, font=font(FONT_REGULAR, 13), fill=DARK,
-                    direction="rtl", language="ar", anchor="ma")
+        for li, line in enumerate(rwrap(d, label, font(FONT_REGULAR, 13), cw-24)):
+            rtext(d, ((x0+x1)/2, y+95+li*20), line, font(FONT_REGULAR, 13), DARK, anchor="ma")
     y += ch + 45
 
     if report["baseline_mean"] is not None:
         lo = round(report["baseline_mean"] - 1.5*report["baseline_std"])
         hi = round(report["baseline_mean"] + 1.5*report["baseline_std"])
         d.rounded_rectangle([LEFT, y, RIGHT, y+70], 14, fill=(227, 238, 237), outline=(227, 238, 237))
-        d.text((RIGHT-25, y+35), f"نطاق القراءات الطبيعي الخاص بالمريض: {lo} – {hi} mg/dL", font=font(FONT_BOLD, 16),
-                fill=TEAL, direction="rtl", language="ar", anchor="rm")
+        rtext(d, (RIGHT-25, y+35), f"نطاق القراءات الطبيعي الخاص بالمريض: {lo} – {hi} mg/dL", font(FONT_BOLD, 16),
+              TEAL, anchor="rm")
         y += 100
 
     # رسم بياني للقراءات
@@ -639,23 +647,20 @@ def generate_weekly_pdf_report(patient_name: str, report: dict) -> str:
     d2 = ImageDraw.Draw(img2)
     d2.rectangle([0, 0, PAGE_W, 12], fill=TEAL)
     y2 = 90
-    d2.text((RIGHT, y2), "الوقائع البارزة خلال الفترة", font=font(FONT_BOLD, 26), fill=NAVY,
-             direction="rtl", language="ar", anchor="ra")
+    rtext(d2, (RIGHT, y2), "الوقائع البارزة خلال الفترة", font(FONT_BOLD, 26), NAVY)
     y2 += 55
     d2.line([(LEFT, y2), (RIGHT, y2)], fill=BORDER, width=2)
     y2 += 30
 
     if not report["incidents"]:
-        d2.text((RIGHT, y2), "لا توجد وقائع خارجة عن الطبيعي خلال هذه الفترة. الحمد لله.", font=font(FONT_REGULAR, 16),
-                 fill=MUTED, direction="rtl", language="ar", anchor="ra")
+        rtext(d2, (RIGHT, y2), "لا توجد وقائع خارجة عن الطبيعي خلال هذه الفترة. الحمد لله.", font(FONT_REGULAR, 16), MUTED)
         y2 += 40
     else:
         for inc in report["incidents"]:
             color = CORAL if inc["level"] == "خطر مؤكد" else (191, 149, 79)
             d2.ellipse([RIGHT-14, y2+6, RIGHT, y2+20], fill=color)
             line1 = f"{inc['date']} — قراءة {inc['reading']:g} mg/dL ({inc['level']})"
-            d2.text((RIGHT-24, y2), line1, font=font(FONT_BOLD, 15), fill=DARK,
-                     direction="rtl", language="ar", anchor="ra")
+            rtext(d2, (RIGHT-24, y2), line1, font(FONT_BOLD, 15), DARK)
             y2 += 26
             if inc["reason"]:
                 y2 = draw_para(d2, inc["reason"], font(FONT_REGULAR, 13), y2, RIGHT-24, CONTENT_W-24, fill=MUTED, lh=20)
@@ -664,25 +669,24 @@ def generate_weekly_pdf_report(patient_name: str, report: dict) -> str:
     y2 += 25
     d2.line([(LEFT, y2), (RIGHT, y2)], fill=BORDER, width=2)
     y2 += 35
-    d2.text((RIGHT, y2), "الالتزام بالأدوية", font=font(FONT_BOLD, 24), fill=NAVY,
-             direction="rtl", language="ar", anchor="ra")
+    rtext(d2, (RIGHT, y2), "الالتزام بالأدوية", font(FONT_BOLD, 24), NAVY)
     y2 += 50
 
     if not report["medications"]:
-        d2.text((RIGHT, y2), "لا توجد أدوية مسجلة بالنظام.", font=font(FONT_REGULAR, 15), fill=MUTED,
-                 direction="rtl", language="ar", anchor="ra")
+        rtext(d2, (RIGHT, y2), "لا توجد أدوية مسجلة بالنظام.", font(FONT_REGULAR, 15), MUTED)
     else:
         for med in report["medications"]:
             d2.rounded_rectangle([LEFT, y2, RIGHT, y2+60], 12, fill=CARD, outline=BORDER, width=2)
-            d2.text((RIGHT-20, y2+30), f"{med['name']} ({med['dose']}) — {med['time']}", font=font(FONT_BOLD, 15),
-                     fill=DARK, direction="rtl", language="ar", anchor="rm")
+            rtext(d2, (RIGHT-20, y2+30), f"{med['name']} ({med['dose']}) — {med['time']}", font(FONT_BOLD, 15),
+                  DARK, anchor="rm")
             pct_color = TEAL if med["pct"] >= 70 else (CORAL if med["pct"] < 40 else (191, 149, 79))
             d2.text((LEFT+20, y2+30), f"{med['pct']}%  ({med['taken']}/{med['scheduled']})", font=font(FONT_BOLD, 16),
                      fill=pct_color, anchor="lm")
             y2 += 75
 
-    d2.text((PAGE_W/2, PAGE_H-90), "تم إنشاء هذا التقرير تلقائياً بواسطة نظام سند — لأغراض المتابعة، لا يُغني عن استشارة الطبيب المعالج",
-             font=font(FONT_REGULAR, 12), fill=MUTED, direction="rtl", language="ar", anchor="mm")
+    rtext(d2, (PAGE_W/2, PAGE_H-90),
+          "تم إنشاء هذا التقرير تلقائياً بواسطة نظام سند — لأغراض المتابعة، لا يُغني عن استشارة الطبيب المعالج",
+          font(FONT_REGULAR, 12), MUTED, anchor="mm")
     pages.append(img2)
 
     out_path = "/tmp/sanad_weekly_report.pdf"

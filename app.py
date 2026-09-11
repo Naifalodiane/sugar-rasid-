@@ -138,6 +138,8 @@ def init_db():
         conn.execute("ALTER TABLE logs ADD COLUMN smart_reason TEXT DEFAULT ''")
     if "is_demo" not in existing_cols:
         conn.execute("ALTER TABLE logs ADD COLUMN is_demo INTEGER DEFAULT 0")
+    if "escalated" not in existing_cols:
+        conn.execute("ALTER TABLE logs ADD COLUMN escalated INTEGER DEFAULT 0")
     conn.commit()
     conn.close()
 
@@ -216,6 +218,14 @@ def detect_danger_trend(readings):
     if up_moves >= len(diffs) - 1 and total_change >= TREND_MIN_CHANGE:
         return "up"
     return None
+
+def classify_sugar(value):
+    if value < 75:
+        return "انخفاض"
+    elif value <= 180:
+        return "طبيعي"
+    else:
+        return "ارتفاع"
 
 def smart_classify(value):
     """
@@ -333,20 +343,80 @@ def init_medications_db():
     med_cols = {row[1] for row in conn.execute("PRAGMA table_info(medications)").fetchall()}
     if "is_demo" not in med_cols:
         conn.execute("ALTER TABLE medications ADD COLUMN is_demo INTEGER DEFAULT 0")
+    # ترحيل آمن: دعم الموعد المرتبط بالصلاة بدل الساعة الثابتة
+    if "schedule_type" not in med_cols:
+        conn.execute("ALTER TABLE medications ADD COLUMN schedule_type TEXT DEFAULT 'clock'")
+    if "prayer_name" not in med_cols:
+        conn.execute("ALTER TABLE medications ADD COLUMN prayer_name TEXT DEFAULT ''")
+    if "prayer_offset" not in med_cols:
+        conn.execute("ALTER TABLE medications ADD COLUMN prayer_offset INTEGER DEFAULT 0")
     medlog_cols = {row[1] for row in conn.execute("PRAGMA table_info(medication_logs)").fetchall()}
     if "is_demo" not in medlog_cols:
         conn.execute("ALTER TABLE medication_logs ADD COLUMN is_demo INTEGER DEFAULT 0")
     conn.commit()
     conn.close()
 
-def add_medication(name, dose, time_str, is_demo=0):
+def add_medication(name, dose, time_str, is_demo=0, schedule_type="clock", prayer_name="", prayer_offset=0):
     conn = get_conn()
     conn.execute(
-        "INSERT INTO medications (name, dose, time_of_day, created_at, is_demo) VALUES (?, ?, ?, ?, ?)",
-        (name, dose, time_str, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), is_demo)
+        "INSERT INTO medications (name, dose, time_of_day, created_at, is_demo, schedule_type, prayer_name, prayer_offset) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (name, dose, time_str, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), is_demo, schedule_type, prayer_name, prayer_offset)
     )
     conn.commit()
     conn.close()
+
+# ------------------------------------------------------------
+# مواقيت الصلاة (Aladhan API) - لحساب موعد الأدوية المرتبطة بالصلاة
+# ------------------------------------------------------------
+PRAYER_NAMES_AR = ["الفجر", "الظهر", "العصر", "المغرب", "العشاء"]
+_ALADHAN_KEYS = {"الفجر": "Fajr", "الظهر": "Dhuhr", "العصر": "Asr", "المغرب": "Maghrib", "العشاء": "Isha"}
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def get_prayer_times_cached(lat, lon, date_str):
+    """يجلب مواقيت الصلاة الخمسة لليوم الحالي عبر Aladhan API (مجاني، بدون مفتاح).
+    مخزّن مؤقتاً 6 ساعات لتقليل الطلبات. يرجع None لو تعذّر الاتصال."""
+    try:
+        url = f"https://api.aladhan.com/v1/timings/{date_str}"
+        resp = requests.get(url, params={"latitude": lat, "longitude": lon, "method": 4}, timeout=8)
+        if resp.status_code == 200:
+            timings = resp.json()["data"]["timings"]
+            return {ar: timings[en][:5] for ar, en in _ALADHAN_KEYS.items()}
+    except Exception:
+        pass
+    return None
+
+def get_prayer_times(lat, lon):
+    return get_prayer_times_cached(lat, lon, datetime.now().strftime("%d-%m-%Y"))
+
+def add_minutes_to_time_str(time_str, minutes):
+    """يضيف عدد دقائق لوقت بصيغة HH:MM ويرجع نفس الصيغة."""
+    h, m = map(int, time_str.split(":"))
+    total = h * 60 + m + int(minutes)
+    total %= 24 * 60
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+def get_effective_time_str(med, prayer_times):
+    """يرجع وقت الجرعة الفعلي لليوم (HH:MM) - مباشرة لو موعد ثابت،
+    أو محسوب من مواقيت الصلاة + الإزاحة لو مرتبط بصلاة."""
+    sched_type = med.get("schedule_type", "clock") or "clock"
+    if sched_type == "prayer" and prayer_times:
+        base = prayer_times.get(med.get("prayer_name", ""))
+        if base:
+            return add_minutes_to_time_str(base, med.get("prayer_offset", 0) or 0)
+    return med["time_of_day"]
+
+def format_medication_schedule(med, prayer_times):
+    """نص وصفي واضح لموعد الدواء، يُعرض بالواجهة."""
+    sched_type = med.get("schedule_type", "clock") or "clock"
+    if sched_type == "prayer":
+        offset = int(med.get("prayer_offset", 0) or 0)
+        prayer = med.get("prayer_name", "")
+        offset_txt = f"بعد {offset} دقيقة من" if offset > 0 else ("قبل " + str(abs(offset)) + " دقيقة من" if offset < 0 else "عند")
+        eff = get_effective_time_str(med, prayer_times)
+        suffix = f" (تقريباً {eff})" if eff else ""
+        return f"{offset_txt} صلاة {prayer}{suffix}"
+    return f"الساعة {med['time_of_day']}"
 
 def get_medications():
     conn = get_conn()
@@ -404,8 +474,9 @@ def mark_reminder_sent(log_id):
 
 MED_GRACE_MINUTES = 60  # مهلة السماح قبل اعتبار الجرعة متأخرة
 
-def check_overdue_and_alert(telegram_token, telegram_chat_id, location_str):
-    """يفحص كل أدوية اليوم، ولو تجاوزت موعدها + المهلة بدون تسجيل أخذ، يرسل تنبيه تلقائي مرة واحدة.
+def check_overdue_and_alert(telegram_token, telegram_chat_id, location_str, prayer_times=None):
+    """يفحص كل أدوية اليوم، ولو تجاوزت موعدها الفعلي (ثابت أو مرتبط بصلاة) + المهلة
+    بدون تسجيل أخذ، يرسل تنبيه تلقائي مرة واحدة.
     يتجاهل الأدوية التجريبية تماماً (حماية إضافية من إرسال تنبيهات وهمية)."""
     meds = get_medications()
     now = datetime.now()
@@ -417,17 +488,19 @@ def check_overdue_and_alert(telegram_token, telegram_chat_id, location_str):
         log_id, _, _, taken_at, reminder_sent = log
         if taken_at is not None or reminder_sent:
             continue
+        effective_time = get_effective_time_str(med, prayer_times)
         try:
-            sched_h, sched_m = map(int, med["time_of_day"].split(":"))
+            sched_h, sched_m = map(int, effective_time.split(":"))
         except Exception:
             continue
         scheduled_dt = now.replace(hour=sched_h, minute=sched_m, second=0, microsecond=0)
         overdue_minutes = (now - scheduled_dt).total_seconds() / 60
         if overdue_minutes >= MED_GRACE_MINUTES:
+            schedule_desc = format_medication_schedule(med, prayer_times)
             msg = (
                 f"💊 *تذكير فائت من تطبيق الأب* 💊\n"
                 f"لم يتم تسجيل أخذ دواء «{med['name']}» ({med['dose']}) "
-                f"المقرر الساعة {med['time_of_day']}.\n"
+                f"المقرر {schedule_desc}.\n"
                 f"📍 الموقع: {location_str}"
             )
             ok, _ = send_telegram_alert(telegram_token, telegram_chat_id, msg)
@@ -435,6 +508,48 @@ def check_overdue_and_alert(telegram_token, telegram_chat_id, location_str):
                 mark_reminder_sent(log_id)
                 alerts_sent.append(med["name"])
     return alerts_sent
+
+# ------------------------------------------------------------
+# تصعيد الجار الموثوق: لو مرّت مهلة معينة على نداء SOS أو خطر
+# مؤكد بدون أي رد/إجراء من العائلة، يُرسل تنبيه إضافي لجار موثوق
+# ------------------------------------------------------------
+def check_neighbor_escalation(telegram_token, neighbor_chat_id, grace_minutes, location_str):
+    """يفحص آخر حدث طارئ (SOS أو خطر مؤكد) غير مُصعَّد بعد؛ لو تجاوز مهلة الانتظار
+    يرسل تنبيه لجار موثوق مرة واحدة فقط لكل حدث. يتجاهل البيانات التجريبية تماماً."""
+    if not neighbor_chat_id:
+        return False
+    conn = get_conn()
+    row = conn.execute("""
+        SELECT id, event_type, reading, smart_level, processed_at FROM logs
+        WHERE is_demo = 0 AND escalated = 0
+          AND (event_type = 'زر SOS' OR smart_level = 'خطر مؤكد')
+        ORDER BY id DESC LIMIT 1
+    """).fetchone()
+    conn.close()
+    if row is None:
+        return False
+    log_id, event_type, reading, smart_level, processed_at = row
+    try:
+        event_dt = datetime.strptime(processed_at, "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return False
+    elapsed_minutes = (datetime.now() - event_dt).total_seconds() / 60
+    if elapsed_minutes < grace_minutes:
+        return False
+    reason = "نداء استغاثة (SOS)" if event_type == "زر SOS" else f"قراءة سكر خطيرة ({reading:g} mg/dL)"
+    msg = (
+        f"🏠 *تصعيد طارئ — يحتاج مساعدتك* 🏠\n"
+        f"حالة طوارئ ({reason}) قبل {int(elapsed_minutes)} دقيقة تقريباً، ولم يتم الرد من العائلة بعد.\n"
+        f"إذا كنت قريباً، الرجاء الاطمئنان على الجار.\n"
+        f"📍 الموقع: {location_str}"
+    )
+    ok, _ = send_telegram_alert(telegram_token, neighbor_chat_id, msg)
+    if ok:
+        conn = get_conn()
+        conn.execute("UPDATE logs SET escalated = 1 WHERE id = ?", (log_id,))
+        conn.commit()
+        conn.close()
+    return ok
 
 init_medications_db()
 
@@ -982,6 +1097,27 @@ if role == "father":
     st.sidebar.subheader("⚙️ إعدادات الطوارئ والاتصال")
     target_phone = st.sidebar.text_input("رقم طوارئ الابن (واتساب - احتياطي يدوي)", value="966500000000")
 
+    with st.sidebar.expander("🏠 تصعيد الجار الموثوق (اختياري)"):
+        st.caption(
+            "لو ما تجاوب أحد من العائلة على نداء استغاثة أو تنبيه خطر خلال مدة معينة، "
+            "يرسل النظام تلقائياً تنبيه إضافي لجار موثوق يقدر يوصل بسرعة."
+        )
+        _neighbor_enabled = st.checkbox("تفعيل تصعيد الجار", value=get_setting("neighbor_enabled", "0") == "1")
+        set_setting("neighbor_enabled", "1" if _neighbor_enabled else "0")
+        if _neighbor_enabled:
+            _neighbor_chat_id = st.text_input(
+                "معرف محادثة الجار على تيليجرام (Chat ID)", value=get_setting("neighbor_chat_id", "")
+            )
+            if _neighbor_chat_id != get_setting("neighbor_chat_id", ""):
+                set_setting("neighbor_chat_id", _neighbor_chat_id)
+            _neighbor_grace = st.number_input(
+                "مهلة الانتظار قبل التصعيد (دقائق)",
+                min_value=2, max_value=60, value=int(get_setting("neighbor_grace_minutes", "10") or 10)
+            )
+            if str(_neighbor_grace) != get_setting("neighbor_grace_minutes", "10"):
+                set_setting("neighbor_grace_minutes", str(_neighbor_grace))
+            st.caption("ملاحظة: نفس خطوات إعداد بوت تيليجرام أعلاه — الجار يفتح محادثة مع نفس البوت ويرسل أي رسالة عشان تحصل على Chat ID الخاص فيه.")
+
     st.sidebar.markdown("---")
     st.sidebar.subheader("🤖 بوت تيليجرام (إرسال تلقائي لفريق الرعاية)")
     with st.sidebar.expander("ℹ️ كيف أحصل على التوكن ومعرفات المحادثة؟"):
@@ -1044,10 +1180,24 @@ if role == "father":
     else:
         st.sidebar.warning(f"📍 موقع افتراضي (تجريبي): {live_lat}, {live_lon}")
 
+# مواقيت الصلاة لليوم (تُستخدم لحساب مواعيد الأدوية المرتبطة بالصلاة)
+_prayer_times = get_prayer_times(live_lat, live_lon)
+
 # فحص صامت لأي دواء فات موعده دون تسجيل + إرسال تنبيه تلقائي عند اللزوم
-_overdue_alerts = check_overdue_and_alert(telegram_token, telegram_chat_id, location_str)
+_overdue_alerts = check_overdue_and_alert(telegram_token, telegram_chat_id, location_str, _prayer_times)
 if _overdue_alerts:
     st.warning("⏰ تم إرسال تنبيه تلقائي بخصوص تأخّر أخذ: " + "، ".join(_overdue_alerts))
+
+# فحص صامت لتصعيد الجار الموثوق لو فُعّلت الميزة ومرّت مهلة الانتظار على حدث طارئ
+if get_setting("neighbor_enabled", "0") == "1":
+    _neighbor_escalated = check_neighbor_escalation(
+        telegram_token,
+        get_setting("neighbor_chat_id", ""),
+        int(get_setting("neighbor_grace_minutes", "10") or 10),
+        location_str,
+    )
+    if _neighbor_escalated:
+        st.warning("🏠 تم تصعيد آخر حالة طارئة للجار الموثوق (لم يصل رد من العائلة خلال المهلة).")
 
 # ------------------------------------------------------------
 # دالة مساعدة: بناء روابط التنبيه (واتساب + اتصال)
@@ -1150,16 +1300,8 @@ if role == "father":
     st.markdown("---")
 
     # ------------------------------------------------------------
-    # تسجيل قراءة السكر يدوياً
+    # تسجيل قراءة السكر يدوياً (classify_sugar معرّفة على مستوى الملف بالأعلى)
     # ------------------------------------------------------------
-    def classify_sugar(value):
-        if value < 75:
-            return "انخفاض"
-        elif value <= 180:
-            return "طبيعي"
-        else:
-            return "ارتفاع"
-
     st.markdown("### 🩸 تسجيل قراءة سكر الدم")
 
     _baseline_mean, _baseline_std, _baseline_n = get_personal_baseline()
@@ -1168,6 +1310,22 @@ if role == "father":
         st.caption(f"🧠 نطاقك الشخصي المعتاد (بناءً على آخر {_baseline_n} قراءة): {_lo} – {_hi} mg/dL")
     else:
         st.caption(f"🧠 التعلم الذكي يحتاج {MIN_HISTORY_FOR_BASELINE} قراءات على الأقل ليبدأ بتحديد نطاقك الشخصي (المسجل حالياً: {_baseline_n}).")
+
+    with st.expander("🔍 كيف يفكر سند؟ (الذكاء القابل للتفسير)"):
+        st.markdown(
+            "سند **لا يعتمد ذكاءً اصطناعياً معقداً يصعب تفسيره** — كل قرار فيه مبني على "
+            "خطوتين واضحتين تقدر تشرحهما لأي أحد بجملة واحدة:"
+        )
+        st.markdown("**1) الحدود الطبية الثابتة:** أقل من 75 أو أكثر من 180 = خطر مؤكد دايماً، لأي شخص.")
+        if _baseline_mean is not None:
+            st.markdown(
+                f"**2) نطاقك الشخصي:** متوسط آخر {_baseline_n} قراءة ({round(_baseline_mean)}) "
+                f"± 1.5 من الانحراف المعياري ({round(_baseline_std,1)}) = نطاقك الطبيعي **{_lo}–{_hi}**. "
+                f"أي قراءة برّا هذا النطاق (حتى لو ضمن الحدود الثابتة) أو اتجاه هبوط/صعود متتالي بآخر 4 قراءات → تنبيه استباقي."
+            )
+        else:
+            st.markdown("**2) نطاقك الشخصي:** لسا ما توفرت قراءات كافية لحسابه (يحتاج 5 على الأقل).")
+        st.caption("بهذا الشكل، أي تنبيه يوصلك له سبب رياضي واضح تقدر تراجعه بنفسك — مو نموذج صندوق أسود.")
 
     manual_val = st.number_input("قراءة سكر الدم (mg/dL)", min_value=20, max_value=600, value=120)
     true_state_manual = st.selectbox("الحالة الفعلية", ["انخفاض", "طبيعي", "ارتفاع"])
@@ -1227,14 +1385,34 @@ if role == "father":
     st.markdown("### 💊 تذكير الأدوية والجرعات")
 
     with st.expander("➕ إضافة دواء جديد"):
+        _new_med_schedule_type = st.radio(
+            "نوع الموعد", ["وقت محدد", "مرتبط بصلاة"], horizontal=True, key="new_med_schedule_type_radio"
+        )
         with st.form("add_med_form", clear_on_submit=True):
             med_name = st.text_input("اسم الدواء")
             med_dose = st.text_input("الجرعة (مثال: حبة واحدة)")
-            med_time = st.time_input("موعد الجرعة اليومي")
+            if _new_med_schedule_type == "وقت محدد":
+                med_time = st.time_input("موعد الجرعة اليومي")
+                prayer_name_sel, prayer_offset_sel = "", 0
+            else:
+                prayer_name_sel = st.selectbox("الصلاة", PRAYER_NAMES_AR)
+                prayer_offset_sel = st.number_input(
+                    "بعد الصلاة بكم دقيقة؟ (رقم سالب = قبل الصلاة)", value=15, step=5
+                )
+                med_time = None
+                if _prayer_times is None:
+                    st.caption("⚠️ ما قدرنا نجيب مواقيت الصلاة الآن (يحتاج اتصال إنترنت) — بيتم حسابها تلقائياً أول ما يتوفر الاتصال.")
             submitted = st.form_submit_button("إضافة الدواء")
             if submitted:
                 if med_name.strip():
-                    add_medication(med_name.strip(), med_dose.strip(), med_time.strftime("%H:%M"))
+                    if _new_med_schedule_type == "وقت محدد":
+                        add_medication(med_name.strip(), med_dose.strip(), med_time.strftime("%H:%M"), schedule_type="clock")
+                    else:
+                        _fallback_med = {"schedule_type": "prayer", "prayer_name": prayer_name_sel,
+                                          "prayer_offset": prayer_offset_sel, "time_of_day": "00:00"}
+                        approx_time = get_effective_time_str(_fallback_med, _prayer_times) if _prayer_times else "00:00"
+                        add_medication(med_name.strip(), med_dose.strip(), approx_time,
+                                        schedule_type="prayer", prayer_name=prayer_name_sel, prayer_offset=prayer_offset_sel)
                     st.success(f"تمت إضافة دواء «{med_name}» بنجاح.")
                     st.rerun()
                 else:
@@ -1251,7 +1429,8 @@ if role == "father":
             col1, col2, col3 = st.columns([3, 1, 1])
             with col1:
                 status_icon = "✅" if taken_at else ("⏰" if reminder_sent else "⏳")
-                label = f"{status_icon} **{med['name']}** ({med['dose']}) — الساعة {med['time_of_day']}"
+                schedule_desc = format_medication_schedule(med, _prayer_times)
+                label = f"{status_icon} **{med['name']}** ({med['dose']}) — {schedule_desc}"
                 if taken_at:
                     label += f"  \n*تم الأخذ الساعة {taken_at.split(' ')[1]}*"
                 st.markdown(label)
@@ -1348,7 +1527,8 @@ else:
             _log = get_or_create_today_log(_med["id"])
             _taken_at = _log[3]
             _status = "✅ تم أخذه اليوم" if _taken_at else "⏳ لم يُسجَّل بعد اليوم"
-            st.markdown(f"**{_med['name']}** ({_med['dose']}) — الساعة {_med['time_of_day']} — {_status}")
+            _sched_desc = format_medication_schedule(_med, _prayer_times)
+            st.markdown(f"**{_med['name']}** ({_med['dose']}) — {_sched_desc} — {_status}")
 
     st.markdown("### 📄 التقرير الصحي الأسبوعي")
     _fam_patient_name = get_setting("patient_name", "")

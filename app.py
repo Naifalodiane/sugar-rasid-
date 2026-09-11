@@ -17,7 +17,7 @@ import matplotlib.dates as mdates
 #   3) موقع GPS حقيقي من متصفح الجهاز (بدل الإحداثيات الثابتة)
 # ============================================================
 
-st.set_page_config(page_title="تطبيق الأب - سند", layout="wide")
+st.set_page_config(page_title="سند - Sanad", layout="wide")
 
 # ------------------------------------------------------------
 # تنسيق بصري مخصص بهوية «سند» - خط أكبر، أزرار أوضح، SOS نابض
@@ -67,8 +67,38 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🛡️ نظام «سند» - تطبيق الأب")
+st.title("🛡️ نظام «سند»")
 st.markdown("لوحة تسجيل البيانات وحالات الطوارئ المباشرة.")
+
+# ------------------------------------------------------------
+# بوابة اختيار الدور: أب (تحكم كامل) أو أحد أفراد العائلة (عرض فقط)
+# كلاهما يقرأ من نفس قاعدة البيانات (نفس التطبيق، نفس الخادم)
+# ------------------------------------------------------------
+if "role" not in st.session_state:
+    st.session_state.role = None
+
+if st.session_state.role is None:
+    st.markdown("## 👋 أهلاً بك في سند")
+    st.markdown("اختر كيف تستخدم التطبيق الآن:")
+    rc1, rc2 = st.columns(2)
+    with rc1:
+        if st.button("👴 أنا الأب", use_container_width=True, type="primary"):
+            st.session_state.role = "father"
+            st.rerun()
+        st.caption("تسجيل القراءات، إدارة الأدوية، زر الاستغاثة، وإعدادات التنبيهات.")
+    with rc2:
+        if st.button("👨‍👩‍👧 أنا أحد أفراد العائلة", use_container_width=True):
+            st.session_state.role = "family"
+            st.rerun()
+        st.caption("متابعة الحالة والتقارير فقط، بدون إمكانية التعديل.")
+    st.stop()
+
+role = st.session_state.role
+_role_label = "تطبيق الأب" if role == "father" else "متابعة العائلة"
+st.caption(f"الوضع الحالي: **{_role_label}**")
+if st.button("🔄 تبديل الدور"):
+    st.session_state.role = None
+    st.rerun()
 
 # ------------------------------------------------------------
 # الثوابت
@@ -699,9 +729,7 @@ def generate_weekly_pdf_report(patient_name: str, report: dict) -> str:
         f.write(img2pdf.convert(tmp_imgs))
     return out_path
 
-def send_telegram_document(bot_token: str, chat_id: str, file_path: str, caption: str = ""):
-    if not bot_token or not chat_id:
-        return False, "التوكن أو معرف المحادثة غير مُدخل"
+def _send_telegram_document_single(bot_token, chat_id, file_path, caption):
     url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
     try:
         with open(file_path, "rb") as f:
@@ -716,6 +744,23 @@ def send_telegram_document(bot_token: str, chat_id: str, file_path: str, caption
         return False, resp.json().get("description", f"HTTP {resp.status_code}")
     except requests.exceptions.RequestException as e:
         return False, str(e)
+
+def send_telegram_document(bot_token: str, chat_ids, file_path: str, caption: str = ""):
+    """يرسل ملفاً لكل مستقبل مُدخل. يرجع (نجح لمستقبل واحد على الأقل؟, تفاصيل الأخطاء إن وُجدت)."""
+    ids = parse_chat_ids(chat_ids)
+    if not bot_token or not ids:
+        return False, "التوكن أو معرف المحادثة غير مُدخل"
+    failures = []
+    any_ok = False
+    for cid in ids:
+        ok, err = _send_telegram_document_single(bot_token, cid, file_path, caption)
+        if ok:
+            any_ok = True
+        else:
+            failures.append(f"{cid}: {err}")
+    detail = " | ".join(failures) if failures else None
+    return any_ok, detail
+
 
 # ------------------------------------------------------------
 # 2) الموقع الجغرافي الحقيقي (GPS من المتصفح)
@@ -746,10 +791,20 @@ location_str = f"https://maps.google.com/?q={live_lat},{live_lon}"
 # ------------------------------------------------------------
 # 4) تيليجرام - إرسال تلقائي حقيقي (بدون أي ضغطة من المستلم)
 # ------------------------------------------------------------
-def send_telegram_alert(bot_token: str, chat_id: str, message: str):
-    """يرسل رسالة فوراً عبر بوت تيليجرام. يرجع (نجح؟, تفاصيل الخطأ إن وجد)."""
-    if not bot_token or not chat_id:
-        return False, "التوكن أو معرف المحادثة غير مُدخل"
+def parse_chat_ids(raw):
+    """يحوّل مدخل معرفات المحادثة (نص مفصول بفواصل أو قائمة) إلى قائمة نظيفة بدون تكرار أو مسافات."""
+    if isinstance(raw, (list, tuple)):
+        items = [str(c).strip() for c in raw]
+    else:
+        items = [c.strip() for c in str(raw or "").split(",")]
+    seen, out = set(), []
+    for c in items:
+        if c and c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
+
+def _send_telegram_message_single(bot_token, chat_id, message):
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     try:
         resp = requests.post(
@@ -763,27 +818,27 @@ def send_telegram_alert(bot_token: str, chat_id: str, message: str):
     except requests.exceptions.RequestException as e:
         return False, str(e)
 
-# ------------------------------------------------------------
-# الشريط الجانبي
-# ------------------------------------------------------------
-st.sidebar.subheader("⚙️ إعدادات الطوارئ والاتصال")
-target_phone = st.sidebar.text_input("رقم طوارئ الابن (واتساب - احتياطي يدوي)", value="966500000000")
+def send_telegram_alert(bot_token: str, chat_ids, message: str):
+    """يرسل رسالة فوراً لكل مستقبل مُدخل (فريق الرعاية كامل).
+    chat_ids: نص واحد، أو نص معرفات مفصولة بفاصلة، أو قائمة.
+    يرجع (نجح لمستقبل واحد على الأقل؟, تفاصيل الأخطاء إن وُجدت)."""
+    ids = parse_chat_ids(chat_ids)
+    if not bot_token or not ids:
+        return False, "التوكن أو معرف المحادثة غير مُدخل"
+    failures = []
+    any_ok = False
+    for cid in ids:
+        ok, err = _send_telegram_message_single(bot_token, cid, message)
+        if ok:
+            any_ok = True
+        else:
+            failures.append(f"{cid}: {err}")
+    detail = " | ".join(failures) if failures else None
+    return any_ok, detail
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("🤖 بوت تيليجرام (إرسال تلقائي)")
-with st.sidebar.expander("ℹ️ كيف أحصل على التوكن ومعرف المحادثة؟"):
-    st.markdown("""
-    **1. أنشئ البوت (مرة واحدة فقط):**
-    - افتح تيليجرام وابحث عن `BotFather`
-    - أرسل له `/newbot` واتبع التعليمات
-    - راح يعطيك **Token** — انسخه
-
-    **2. احصل على معرف محادثة الابن (Chat ID):**
-    - الابن يفتح محادثة مع البوت الجديد ويرسل له أي رسالة (مثلاً "مرحبا")
-    - افتح هذا الرابط بالمتصفح (استبدل TOKEN بتوكنك):
-      `https://api.telegram.org/botTOKEN/getUpdates`
-    - بتلاقي `"chat":{"id": 123456789 ...}` — هذا الرقم هو الـ Chat ID
-    """)
+# ------------------------------------------------------------
+# قراءة إعدادات تيليجرام (مشتركة بين الدورين - القراءة فقط بدون واجهة)
+# ------------------------------------------------------------
 try:
     telegram_token = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
     telegram_chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "")
@@ -791,38 +846,74 @@ except Exception:
     telegram_token = ""
     telegram_chat_id = ""
 
-if telegram_token and telegram_chat_id:
-    st.sidebar.success("🔒 توكن البوت ومعرف المحادثة محفوظين بشكل دائم (Secrets)")
-    with st.sidebar.expander("تعديل القيم المحفوظة؟"):
-        st.caption("عدّلها من إعدادات Secrets في لوحة تحكم Streamlit Cloud مباشرة (أدق من الكتابة هنا في كل مرة).")
-else:
-    st.sidebar.warning("⚠️ لم يتم حفظ التوكن بعد بشكل دائم — أدخله الآن، وراجع الشرح تحت لحفظه نهائياً.")
-    telegram_token = st.sidebar.text_input("توكن البوت (Bot Token) - مؤقت", type="password", value=telegram_token)
-    telegram_chat_id = st.sidebar.text_input("معرف محادثة الابن (Chat ID) - مؤقت", value=telegram_chat_id)
-    with st.sidebar.expander("💾 كيف أحفظهم بشكل دائم ولا يروحون بعد التحديث؟"):
-        st.markdown("""
-        **إذا تطبيقك على Streamlit Cloud:**
-        1. افتح [share.streamlit.io](https://share.streamlit.io) ولقِ تطبيقك
-        2. اضغط القائمة (⋮) بجنب التطبيق ← **Settings** ← **Secrets**
-        3. الصق هذا بالضبط (بقيمك الحقيقية):
-        ```
-        TELEGRAM_BOT_TOKEN = "8879255452:AAETJet4SR8UdIQdfyh7oD7unDx25jPaO74"
-        TELEGRAM_CHAT_ID = "7026633810"
-        ```
-        4. احفظ (Save) — التطبيق يعيد التشغيل تلقائياً ويصير يقرأهم دايماً من نفسه
+if role == "father":
+    # ------------------------------------------------------------
+    # الشريط الجانبي (متاح للأب فقط - إعدادات وتحكم)
+    # ------------------------------------------------------------
+    st.sidebar.subheader("⚙️ إعدادات الطوارئ والاتصال")
+    target_phone = st.sidebar.text_input("رقم طوارئ الابن (واتساب - احتياطي يدوي)", value="966500000000")
 
-        **إذا تشغّله محلياً على جهازك:**
-        أنشئ ملف `.streamlit/secrets.toml` بنفس مجلد المشروع وحط فيه نفس السطرين أعلاه.
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🤖 بوت تيليجرام (إرسال تلقائي لفريق الرعاية)")
+    with st.sidebar.expander("ℹ️ كيف أحصل على التوكن ومعرفات المحادثة؟"):
+        st.markdown("""
+        **1. أنشئ البوت (مرة واحدة فقط):**
+        - افتح تيليجرام وابحث عن `BotFather`
+        - أرسل له `/newbot` واتبع التعليمات
+        - راح يعطيك **Token** — انسخه
+
+        **2. احصل على معرف محادثة كل فرد من العائلة (Chat ID):**
+        - كل فرد (الابن، البنت، أي أحد تبيه يستلم التنبيهات) يفتح محادثة مع البوت ويرسل له أي رسالة (مثلاً "مرحبا")
+        - لكل واحد منهم: افتح هذا الرابط بالمتصفح (استبدل TOKEN بتوكنك):
+          `https://api.telegram.org/botTOKEN/getUpdates`
+        - بتلاقي `"chat":{"id": 123456789 ...}` لكل شخص — هذا رقمه الخاص
+
+        **3. اجمعهم بخانة واحدة مفصولين بفاصلة:**
+        مثال: `111111111,222222222,333333333`
         """)
 
-st.sidebar.markdown("---")
-st.sidebar.info(f"📱 جوال الأب المسجل: {father_phone}")
-st.sidebar.error("🚨 رقم الإسعاف السعودي المعتمد: 997")
-st.sidebar.markdown("---")
-if is_live_gps:
-    st.sidebar.success(f"📍 الموقع الحالي (GPS حقيقي): {live_lat}, {live_lon}")
-else:
-    st.sidebar.warning(f"📍 موقع افتراضي (تجريبي): {live_lat}, {live_lon}")
+    _recipient_count = len(parse_chat_ids(telegram_chat_id))
+
+    if telegram_token and telegram_chat_id:
+        st.sidebar.success(f"🔒 محفوظين بشكل دائم — عدد مستقبلي التنبيه: {_recipient_count}")
+        with st.sidebar.expander("تعديل القيم المحفوظة؟"):
+            st.caption("عدّلها من إعدادات Secrets في لوحة تحكم Streamlit Cloud مباشرة (أدق من الكتابة هنا في كل مرة).")
+    else:
+        st.sidebar.warning("⚠️ لم يتم حفظ التوكن بعد بشكل دائم — أدخله الآن، وراجع الشرح تحت لحفظه نهائياً.")
+        telegram_token = st.sidebar.text_input("توكن البوت (Bot Token) - مؤقت", type="password", value=telegram_token)
+        telegram_chat_id = st.sidebar.text_input(
+            "معرفات محادثة فريق الرعاية (Chat IDs) - مؤقت",
+            value=telegram_chat_id,
+            placeholder="مثال: 111111111,222222222",
+            help="ضع معرف كل شخص تبي يستلم التنبيهات، مفصولين بفاصلة"
+        )
+        if telegram_chat_id:
+            st.sidebar.caption(f"عدد مستقبلي التنبيه المُدخلين: {len(parse_chat_ids(telegram_chat_id))}")
+        with st.sidebar.expander("💾 كيف أحفظهم بشكل دائم ولا يروحون بعد التحديث؟"):
+            st.markdown("""
+            **إذا تطبيقك على Streamlit Cloud:**
+            1. افتح [share.streamlit.io](https://share.streamlit.io) ولقِ تطبيقك
+            2. اضغط القائمة (⋮) بجنب التطبيق ← **Settings** ← **Secrets**
+            3. الصق هذا بالضبط (بقيمك الحقيقية، وضع كل معرفات فريق الرعاية مفصولة بفاصلة):
+            ```
+            TELEGRAM_BOT_TOKEN = "8879255452:AAETJet4SR8UdIQdfyh7oD7unDx25jPaO74"
+            TELEGRAM_CHAT_ID = "7026633810,111111111,222222222"
+            ```
+            4. احفظ (Save) — التطبيق يعيد التشغيل تلقائياً ويصير يقرأهم دايماً من نفسه
+
+            **إذا تشغّله محلياً على جهازك:**
+            أنشئ ملف `.streamlit/secrets.toml` بنفس مجلد المشروع وحط فيه نفس السطرين أعلاه.
+
+            """)
+
+    st.sidebar.markdown("---")
+    st.sidebar.info(f"📱 جوال الأب المسجل: {father_phone}")
+    st.sidebar.error("🚨 رقم الإسعاف السعودي المعتمد: 997")
+    st.sidebar.markdown("---")
+    if is_live_gps:
+        st.sidebar.success(f"📍 الموقع الحالي (GPS حقيقي): {live_lat}, {live_lon}")
+    else:
+        st.sidebar.warning(f"📍 موقع افتراضي (تجريبي): {live_lat}, {live_lon}")
 
 # فحص صامت لأي دواء فات موعده دون تسجيل + إرسال تنبيه تلقائي عند اللزوم
 _overdue_alerts = check_overdue_and_alert(telegram_token, telegram_chat_id, location_str)
@@ -857,9 +948,13 @@ def render_alert_box(title: str, message: str, box_color="#ff4d4d", bg_color="#f
     """, unsafe_allow_html=True)
 
     if tg_ok:
-        st.success("✅ تم إرسال التنبيه تلقائياً عبر تيليجرام إلى الابن (بدون أي تدخل يدوي).")
+        n = len(parse_chat_ids(telegram_chat_id))
+        who = f"{n} من أفراد العائلة" if n > 1 else "الابن"
+        st.success(f"✅ تم إرسال التنبيه تلقائياً عبر تيليجرام إلى {who} (بدون أي تدخل يدوي).")
+        if tg_error:
+            st.caption(f"⚠️ ملاحظة: تعذّر الوصول لبعض المستقبلين: {tg_error}")
     else:
-        st.warning(f"⚠️ لم يُرسل التنبيه التلقائي عبر تيليجرام: {tg_error}\n\nيمكنك استخدام رابط الواتساب اليدوي بالأعلى كبديل مؤقت.")
+        st.warning(f"⚠️ لم يُرسل التنبيه التلقائي عبر تيليجرام لأي مستقبل: {tg_error}\n\nيمكنك استخدام رابط الواتساب اليدوي بالأعلى كبديل مؤقت.")
 
 # ------------------------------------------------------------
 # 3) زر الفزعة الطارئة (SOS) - فوري ولا يحتاج قراءة سكر
@@ -899,198 +994,248 @@ else:
 st.markdown("### 📈 سجل القراءات وتطورها")
 render_history_chart()
 
-st.markdown("### 🆘 الفزعة الطارئة")
-sos_col1, sos_col2 = st.columns([1, 3])
-with sos_col1:
-    sos_clicked = st.button("🆘 نداء استغاثة فورية", type="primary", use_container_width=True)
-with sos_col2:
-    st.caption("اضغط هذا الزر في أي وقت لإرسال نداء طوارئ فوري بدون الحاجة لتسجيل قراءة سكر.")
+if role == "father":
+    st.markdown("### 🆘 الفزعة الطارئة")
+    sos_col1, sos_col2 = st.columns([1, 3])
+    with sos_col1:
+        sos_clicked = st.button("🆘 نداء استغاثة فورية", type="primary", use_container_width=True)
+    with sos_col2:
+        st.caption("اضغط هذا الزر في أي وقت لإرسال نداء طوارئ فوري بدون الحاجة لتسجيل قراءة سكر.")
 
-if sos_clicked:
-    sos_row = {
-        "test_id": next_test_id(),
-        "reading": None,
-        "true_state": "-",
-        "system_class": "فزعة يدوية",
-        "alert_sent": "نعم",
-        "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "alert_ms": None,
-        "accuracy": "-",
-        "event_type": "زر SOS",
-    }
-    insert_log(sos_row)
-    sos_message = f"🆘 *نداء استغاثة فورية من تطبيق الأب* 🆘\nتم الضغط على زر الفزعة الطارئة.\n📍 الموقع: {location_str}"
-    render_alert_box("🆘 تم إرسال نداء استغاثة فورية!", sos_message)
+    if sos_clicked:
+        sos_row = {
+            "test_id": next_test_id(),
+            "reading": None,
+            "true_state": "-",
+            "system_class": "فزعة يدوية",
+            "alert_sent": "نعم",
+            "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "alert_ms": None,
+            "accuracy": "-",
+            "event_type": "زر SOS",
+        }
+        insert_log(sos_row)
+        sos_message = f"🆘 *نداء استغاثة فورية من تطبيق الأب* 🆘\nتم الضغط على زر الفزعة الطارئة.\n📍 الموقع: {location_str}"
+        render_alert_box("🆘 تم إرسال نداء استغاثة فورية!", sos_message)
 
-st.markdown("---")
+    st.markdown("---")
 
-# ------------------------------------------------------------
-# تسجيل قراءة السكر يدوياً
-# ------------------------------------------------------------
-def classify_sugar(value):
-    if value < 75:
-        return "انخفاض"
-    elif value <= 180:
-        return "طبيعي"
-    else:
-        return "ارتفاع"
-
-st.markdown("### 🩸 تسجيل قراءة سكر الدم")
-
-_baseline_mean, _baseline_std, _baseline_n = get_personal_baseline()
-if _baseline_mean is not None:
-    _lo, _hi = round(_baseline_mean - 1.5*_baseline_std), round(_baseline_mean + 1.5*_baseline_std)
-    st.caption(f"🧠 نطاقك الشخصي المعتاد (بناءً على آخر {_baseline_n} قراءة): {_lo} – {_hi} mg/dL")
-else:
-    st.caption(f"🧠 التعلم الذكي يحتاج {MIN_HISTORY_FOR_BASELINE} قراءات على الأقل ليبدأ بتحديد نطاقك الشخصي (المسجل حالياً: {_baseline_n}).")
-
-manual_val = st.number_input("قراءة سكر الدم (mg/dL)", min_value=20, max_value=600, value=120)
-true_state_manual = st.selectbox("الحالة الفعلية", ["انخفاض", "طبيعي", "ارتفاع"])
-
-if st.button("معالجة وتسجيل القراءة فوراً", use_container_width=True):
-    start_time = datetime.now()
-    fixed_class, smart_level, smart_reason = smart_classify(manual_val)
-    alert_sent = "نعم" if smart_level != "طبيعي" else "لا"
-    elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
-
-    new_row = {
-        "test_id": next_test_id(),
-        "reading": manual_val,
-        "true_state": true_state_manual,
-        "system_class": fixed_class,
-        "alert_sent": alert_sent,
-        "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "alert_ms": round(elapsed_ms, 2),
-        "accuracy": "صحيح" if fixed_class == true_state_manual else "خاطئ",
-        "event_type": "قراءة سكر",
-        "smart_level": smart_level,
-        "smart_reason": smart_reason,
-    }
-    insert_log(new_row)
-
-    if smart_level == "خطر مؤكد":
-        auto_alert_text = (
-            f"🚨 *تنبيه طوارئ من تطبيق الأب* 🚨\n"
-            f"القراءة المسجلة خطيرة: {manual_val} mg/dL ({fixed_class}).\n"
-            f"📍 الموقع: {location_str}"
-        )
-        render_alert_box(
-            f"🚨 تحذير خطير: القراءة ({fixed_class}: {manual_val}) غير طبيعية!",
-            auto_alert_text,
-        )
-    elif smart_level == "تنبيه استباقي":
-        auto_alert_text = (
-            f"⚠️ *تنبيه استباقي ذكي من تطبيق الأب* ⚠️\n"
-            f"القراءة {manual_val} mg/dL ضمن الحدود الثابتة، لكن النظام لاحظ نمطاً يستدعي الانتباه:\n"
-            f"السبب: {smart_reason}\n"
-            f"📍 الموقع: {location_str}"
-        )
-        render_alert_box(
-            f"⚠️ تنبيه استباقي: {smart_reason}",
-            auto_alert_text,
-            box_color="#d4a017",
-            bg_color="#fffbea",
-        )
-    else:
-        st.success("✅ تمت معالجة وتسجيل القراءة بنجاح (الحالة طبيعية، ولا يوجد نمط يستدعي القلق).")
-
-st.markdown("---")
-
-# ------------------------------------------------------------
-# واجهة تذكير الأدوية والجرعات
-# ------------------------------------------------------------
-st.markdown("### 💊 تذكير الأدوية والجرعات")
-
-with st.expander("➕ إضافة دواء جديد"):
-    with st.form("add_med_form", clear_on_submit=True):
-        med_name = st.text_input("اسم الدواء")
-        med_dose = st.text_input("الجرعة (مثال: حبة واحدة)")
-        med_time = st.time_input("موعد الجرعة اليومي")
-        submitted = st.form_submit_button("إضافة الدواء")
-        if submitted:
-            if med_name.strip():
-                add_medication(med_name.strip(), med_dose.strip(), med_time.strftime("%H:%M"))
-                st.success(f"تمت إضافة دواء «{med_name}» بنجاح.")
-                st.rerun()
-            else:
-                st.error("الرجاء إدخال اسم الدواء.")
-
-meds_df = get_medications()
-if len(meds_df) == 0:
-    st.caption("لا توجد أدوية مسجلة بعد. أضف أول دواء من الأعلى.")
-else:
-    st.markdown(f"**أدوية اليوم ({datetime.now().strftime('%Y-%m-%d')}):**")
-    for _, med in meds_df.iterrows():
-        log = get_or_create_today_log(med["id"])
-        log_id, _, _, taken_at, reminder_sent = log
-        col1, col2, col3 = st.columns([3, 1, 1])
-        with col1:
-            status_icon = "✅" if taken_at else ("⏰" if reminder_sent else "⏳")
-            label = f"{status_icon} **{med['name']}** ({med['dose']}) — الساعة {med['time_of_day']}"
-            if taken_at:
-                label += f"  \n*تم الأخذ الساعة {taken_at.split(' ')[1]}*"
-            st.markdown(label)
-        with col2:
-            if not taken_at:
-                if st.button("تم أخذه", key=f"take_{med['id']}"):
-                    mark_taken(log_id)
-                    st.rerun()
-        with col3:
-            if st.button("حذف", key=f"del_{med['id']}"):
-                delete_medication(med["id"])
-                st.rerun()
-
-st.markdown("---")
-
-# ------------------------------------------------------------
-# واجهة التقرير الصحي الأسبوعي
-# ------------------------------------------------------------
-st.markdown("### 📄 التقرير الصحي الأسبوعي")
-
-patient_name = st.text_input(
-    "اسم المريض (يظهر بالتقرير)",
-    value=get_setting("patient_name", ""),
-    placeholder="مثال: عبدالله العضياني",
-)
-if patient_name and patient_name != get_setting("patient_name", ""):
-    set_setting("patient_name", patient_name)
-
-if not _pdf_fonts_available():
-    st.error("⚠️ ملفات الخط المطلوبة (fonts/FreeSerif.ttf و fonts/FreeSerifBold.ttf) غير موجودة بجانب app.py — أضفها أولاً لتفعيل هذه الميزة.")
-else:
-    if st.button("📄 توليد التقرير الأسبوعي الآن", use_container_width=True):
-        if not patient_name.strip():
-            st.error("الرجاء إدخال اسم المريض أولاً.")
+    # ------------------------------------------------------------
+    # تسجيل قراءة السكر يدوياً
+    # ------------------------------------------------------------
+    def classify_sugar(value):
+        if value < 75:
+            return "انخفاض"
+        elif value <= 180:
+            return "طبيعي"
         else:
-            with st.spinner("جاري إنشاء التقرير..."):
-                report_data = get_weekly_report_data(days=7)
-                pdf_path = generate_weekly_pdf_report(patient_name.strip(), report_data)
-            st.success("✅ تم إنشاء التقرير بنجاح.")
+            return "ارتفاع"
 
-            with open(pdf_path, "rb") as f:
-                pdf_bytes = f.read()
+    st.markdown("### 🩸 تسجيل قراءة سكر الدم")
+
+    _baseline_mean, _baseline_std, _baseline_n = get_personal_baseline()
+    if _baseline_mean is not None:
+        _lo, _hi = round(_baseline_mean - 1.5*_baseline_std), round(_baseline_mean + 1.5*_baseline_std)
+        st.caption(f"🧠 نطاقك الشخصي المعتاد (بناءً على آخر {_baseline_n} قراءة): {_lo} – {_hi} mg/dL")
+    else:
+        st.caption(f"🧠 التعلم الذكي يحتاج {MIN_HISTORY_FOR_BASELINE} قراءات على الأقل ليبدأ بتحديد نطاقك الشخصي (المسجل حالياً: {_baseline_n}).")
+
+    manual_val = st.number_input("قراءة سكر الدم (mg/dL)", min_value=20, max_value=600, value=120)
+    true_state_manual = st.selectbox("الحالة الفعلية", ["انخفاض", "طبيعي", "ارتفاع"])
+
+    if st.button("معالجة وتسجيل القراءة فوراً", use_container_width=True):
+        start_time = datetime.now()
+        fixed_class, smart_level, smart_reason = smart_classify(manual_val)
+        alert_sent = "نعم" if smart_level != "طبيعي" else "لا"
+        elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
+
+        new_row = {
+            "test_id": next_test_id(),
+            "reading": manual_val,
+            "true_state": true_state_manual,
+            "system_class": fixed_class,
+            "alert_sent": alert_sent,
+            "processed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "alert_ms": round(elapsed_ms, 2),
+            "accuracy": "صحيح" if fixed_class == true_state_manual else "خاطئ",
+            "event_type": "قراءة سكر",
+            "smart_level": smart_level,
+            "smart_reason": smart_reason,
+        }
+        insert_log(new_row)
+
+        if smart_level == "خطر مؤكد":
+            auto_alert_text = (
+                f"🚨 *تنبيه طوارئ من تطبيق الأب* 🚨\n"
+                f"القراءة المسجلة خطيرة: {manual_val} mg/dL ({fixed_class}).\n"
+                f"📍 الموقع: {location_str}"
+            )
+            render_alert_box(
+                f"🚨 تحذير خطير: القراءة ({fixed_class}: {manual_val}) غير طبيعية!",
+                auto_alert_text,
+            )
+        elif smart_level == "تنبيه استباقي":
+            auto_alert_text = (
+                f"⚠️ *تنبيه استباقي ذكي من تطبيق الأب* ⚠️\n"
+                f"القراءة {manual_val} mg/dL ضمن الحدود الثابتة، لكن النظام لاحظ نمطاً يستدعي الانتباه:\n"
+                f"السبب: {smart_reason}\n"
+                f"📍 الموقع: {location_str}"
+            )
+            render_alert_box(
+                f"⚠️ تنبيه استباقي: {smart_reason}",
+                auto_alert_text,
+                box_color="#d4a017",
+                bg_color="#fffbea",
+            )
+        else:
+            st.success("✅ تمت معالجة وتسجيل القراءة بنجاح (الحالة طبيعية، ولا يوجد نمط يستدعي القلق).")
+
+    st.markdown("---")
+
+    # ------------------------------------------------------------
+    # واجهة تذكير الأدوية والجرعات
+    # ------------------------------------------------------------
+    st.markdown("### 💊 تذكير الأدوية والجرعات")
+
+    with st.expander("➕ إضافة دواء جديد"):
+        with st.form("add_med_form", clear_on_submit=True):
+            med_name = st.text_input("اسم الدواء")
+            med_dose = st.text_input("الجرعة (مثال: حبة واحدة)")
+            med_time = st.time_input("موعد الجرعة اليومي")
+            submitted = st.form_submit_button("إضافة الدواء")
+            if submitted:
+                if med_name.strip():
+                    add_medication(med_name.strip(), med_dose.strip(), med_time.strftime("%H:%M"))
+                    st.success(f"تمت إضافة دواء «{med_name}» بنجاح.")
+                    st.rerun()
+                else:
+                    st.error("الرجاء إدخال اسم الدواء.")
+
+    meds_df = get_medications()
+    if len(meds_df) == 0:
+        st.caption("لا توجد أدوية مسجلة بعد. أضف أول دواء من الأعلى.")
+    else:
+        st.markdown(f"**أدوية اليوم ({datetime.now().strftime('%Y-%m-%d')}):**")
+        for _, med in meds_df.iterrows():
+            log = get_or_create_today_log(med["id"])
+            log_id, _, _, taken_at, reminder_sent = log
+            col1, col2, col3 = st.columns([3, 1, 1])
+            with col1:
+                status_icon = "✅" if taken_at else ("⏰" if reminder_sent else "⏳")
+                label = f"{status_icon} **{med['name']}** ({med['dose']}) — الساعة {med['time_of_day']}"
+                if taken_at:
+                    label += f"  \n*تم الأخذ الساعة {taken_at.split(' ')[1]}*"
+                st.markdown(label)
+            with col2:
+                if not taken_at:
+                    if st.button("تم أخذه", key=f"take_{med['id']}"):
+                        mark_taken(log_id)
+                        st.rerun()
+            with col3:
+                if st.button("حذف", key=f"del_{med['id']}"):
+                    delete_medication(med["id"])
+                    st.rerun()
+
+    st.markdown("---")
+
+    # ------------------------------------------------------------
+    # واجهة التقرير الصحي الأسبوعي
+    # ------------------------------------------------------------
+    st.markdown("### 📄 التقرير الصحي الأسبوعي")
+
+    patient_name = st.text_input(
+        "اسم المريض (يظهر بالتقرير)",
+        value=get_setting("patient_name", ""),
+        placeholder="مثال: عبدالله العضياني",
+    )
+    if patient_name and patient_name != get_setting("patient_name", ""):
+        set_setting("patient_name", patient_name)
+
+    if not _pdf_fonts_available():
+        st.error("⚠️ ملفات الخط المطلوبة (fonts/FreeSerif.ttf و fonts/FreeSerifBold.ttf) غير موجودة بجانب app.py — أضفها أولاً لتفعيل هذه الميزة.")
+    else:
+        if st.button("📄 توليد التقرير الأسبوعي الآن", use_container_width=True):
+            if not patient_name.strip():
+                st.error("الرجاء إدخال اسم المريض أولاً.")
+            else:
+                with st.spinner("جاري إنشاء التقرير..."):
+                    report_data = get_weekly_report_data(days=7)
+                    pdf_path = generate_weekly_pdf_report(patient_name.strip(), report_data)
+                st.success("✅ تم إنشاء التقرير بنجاح.")
+
+                with open(pdf_path, "rb") as f:
+                    pdf_bytes = f.read()
+                st.download_button(
+                    "⬇️ تنزيل التقرير (PDF)", data=pdf_bytes,
+                    file_name=f"sanad_weekly_report_{datetime.now().strftime('%Y%m%d')}.pdf",
+                    mime="application/pdf", use_container_width=True,
+                )
+
+                tg_ok, tg_err = send_telegram_document(
+                    telegram_token, telegram_chat_id, pdf_path,
+                    caption=f"📄 التقرير الصحي الأسبوعي — {patient_name}"
+                )
+                if tg_ok:
+                    st.success("✅ تم إرسال التقرير تلقائياً عبر تيليجرام.")
+                else:
+                    st.warning(f"⚠️ لم يُرسل التقرير عبر تيليجرام: {tg_err}\n\nيمكنك تنزيله يدوياً من الزر أعلاه.")
+
+    # ------------------------------------------------------------
+    # السجل التفصيلي (مطوي افتراضياً - للاطلاع التقني فقط)
+    # ------------------------------------------------------------
+    with st.expander("📋 عرض السجل التفصيلي الكامل"):
+        logs_df = load_logs()
+        st.dataframe(logs_df, use_container_width=True)
+
+        if len(logs_df) > 0:
+            csv = logs_df.to_csv(index=False).encode("utf-8-sig")
+            st.download_button("⬇️ تنزيل السجل كملف CSV", data=csv, file_name="sanad_logs.csv", mime="text/csv")
+
+else:
+    # ------------------------------------------------------------
+    # عرض العائلة (للقراءة فقط - بدون أي إمكانية تعديل)
+    # ملاحظة: بطاقة الحالة والرسم البياني معروضان أصلاً فوق لكلا الدورين
+    # ------------------------------------------------------------
+    st.markdown("### ⚠️ آخر الوقائع البارزة")
+    _fam_report = get_weekly_report_data(days=14)
+    if not _fam_report["incidents"]:
+        st.info("لا توجد وقائع خارجة عن الطبيعي خلال آخر 14 يوماً. الحمد لله.")
+    else:
+        for _inc in _fam_report["incidents"]:
+            _clr = "#D5574A" if _inc["level"] == "خطر مؤكد" else "#B8860B"
+            st.markdown(f"""
+                <div style="border-right:4px solid {_clr}; padding:8px 14px; margin-bottom:10px; background:#FAFAFA; border-radius:8px;">
+                    <b>{_inc["date"]}</b> — قراءة {_inc["reading"]:g} mg/dL ({_inc["level"]})<br>
+                    <span style="color:#666; font-size:14px;">{_inc["reason"]}</span>
+                </div>
+            """, unsafe_allow_html=True)
+
+    st.markdown("### 💊 الالتزام بالأدوية")
+    _fam_meds = get_medications()
+    if len(_fam_meds) == 0:
+        st.caption("لا توجد أدوية مسجلة بعد.")
+    else:
+        for _, _med in _fam_meds.iterrows():
+            _log = get_or_create_today_log(_med["id"])
+            _taken_at = _log[3]
+            _status = "✅ تم أخذه اليوم" if _taken_at else "⏳ لم يُسجَّل بعد اليوم"
+            st.markdown(f"**{_med['name']}** ({_med['dose']}) — الساعة {_med['time_of_day']} — {_status}")
+
+    st.markdown("### 📄 التقرير الصحي الأسبوعي")
+    _fam_patient_name = get_setting("patient_name", "")
+    if not _pdf_fonts_available():
+        st.error("⚠️ ميزة التقرير غير مفعّلة حالياً.")
+    elif not _fam_patient_name:
+        st.info("لم يُدخل الأب اسم المريض بعد، لذا لا يمكن توليد التقرير حالياً.")
+    else:
+        if st.button("📄 توليد وتنزيل آخر تقرير أسبوعي", use_container_width=True):
+            with st.spinner("جاري إنشاء التقرير..."):
+                _report_data = get_weekly_report_data(days=7)
+                _pdf_path = generate_weekly_pdf_report(_fam_patient_name, _report_data)
+            with open(_pdf_path, "rb") as f:
+                _pdf_bytes = f.read()
             st.download_button(
-                "⬇️ تنزيل التقرير (PDF)", data=pdf_bytes,
+                "⬇️ تنزيل التقرير (PDF)", data=_pdf_bytes,
                 file_name=f"sanad_weekly_report_{datetime.now().strftime('%Y%m%d')}.pdf",
                 mime="application/pdf", use_container_width=True,
             )
-
-            tg_ok, tg_err = send_telegram_document(
-                telegram_token, telegram_chat_id, pdf_path,
-                caption=f"📄 التقرير الصحي الأسبوعي — {patient_name}"
-            )
-            if tg_ok:
-                st.success("✅ تم إرسال التقرير تلقائياً عبر تيليجرام.")
-            else:
-                st.warning(f"⚠️ لم يُرسل التقرير عبر تيليجرام: {tg_err}\n\nيمكنك تنزيله يدوياً من الزر أعلاه.")
-
-# ------------------------------------------------------------
-# السجل التفصيلي (مطوي افتراضياً - للاطلاع التقني فقط)
-# ------------------------------------------------------------
-with st.expander("📋 عرض السجل التفصيلي الكامل"):
-    logs_df = load_logs()
-    st.dataframe(logs_df, use_container_width=True)
-
-    if len(logs_df) > 0:
-        csv = logs_df.to_csv(index=False).encode("utf-8-sig")
-        st.download_button("⬇️ تنزيل السجل كملف CSV", data=csv, file_name="sanad_logs.csv", mime="text/csv")

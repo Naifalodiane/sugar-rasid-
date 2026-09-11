@@ -394,6 +394,326 @@ def check_overdue_and_alert(telegram_token, telegram_chat_id, location_str):
 init_medications_db()
 
 # ------------------------------------------------------------
+# 8) إعدادات عامة (key-value) - لتخزين اسم المريض وغيره بشكل دائم
+# ------------------------------------------------------------
+def init_settings_db():
+    conn = get_conn()
+    conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+    conn.commit()
+    conn.close()
+
+def get_setting(key, default=""):
+    conn = get_conn()
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    return row[0] if row else default
+
+def set_setting(key, value):
+    conn = get_conn()
+    conn.execute("INSERT INTO settings (key, value) VALUES (?, ?) "
+                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, value))
+    conn.commit()
+    conn.close()
+
+init_settings_db()
+
+# ------------------------------------------------------------
+# 9) تجميع بيانات التقرير الصحي الأسبوعي
+# ------------------------------------------------------------
+def get_weekly_report_data(days=7):
+    """يجمع كل بيانات آخر N يوم من قاعدة البيانات في قاموس واحد جاهز للتقرير."""
+    since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_conn()
+
+    readings_df = pd.read_sql_query(
+        "SELECT reading, processed_at, smart_level, smart_reason FROM logs "
+        "WHERE event_type='قراءة سكر' AND reading IS NOT NULL AND processed_at >= ? "
+        "ORDER BY processed_at ASC",
+        conn, params=(since,)
+    )
+    sos_df = pd.read_sql_query(
+        "SELECT processed_at FROM logs WHERE event_type='زر SOS' AND processed_at >= ? "
+        "ORDER BY processed_at ASC",
+        conn, params=(since,)
+    )
+    conn.close()
+
+    counts = {
+        "طبيعي": int((readings_df["smart_level"] == "طبيعي").sum()),
+        "تنبيه استباقي": int((readings_df["smart_level"] == "تنبيه استباقي").sum()),
+        "خطر مؤكد": int((readings_df["smart_level"] == "خطر مؤكد").sum()),
+    }
+
+    incidents = []
+    flagged = readings_df[readings_df["smart_level"] != "طبيعي"]
+    for _, row in flagged.iterrows():
+        incidents.append({
+            "date": row["processed_at"],
+            "reading": row["reading"],
+            "level": row["smart_level"],
+            "reason": row["smart_reason"] or "",
+        })
+
+    mean, std, n = get_personal_baseline()
+
+    # التزام الأدوية خلال نفس الفترة
+    meds = get_medications()
+    med_adherence = []
+    conn = get_conn()
+    for _, med in meds.iterrows():
+        med_id = int(med["id"])
+        logs = pd.read_sql_query(
+            "SELECT log_date, taken_at FROM medication_logs WHERE medication_id = ? AND log_date >= ?",
+            conn, params=(med_id, since[:10])
+        )
+        scheduled_days = max(len(logs), 1)
+        taken_days = int(logs["taken_at"].notna().sum())
+        med_adherence.append({
+            "name": med["name"], "dose": med["dose"], "time": med["time_of_day"],
+            "taken": taken_days, "scheduled": scheduled_days,
+            "pct": round(100 * taken_days / scheduled_days) if scheduled_days else 0,
+        })
+    conn.close()
+
+    return {
+        "period_days": days,
+        "readings": readings_df,
+        "counts": counts,
+        "total_readings": len(readings_df),
+        "incidents": incidents,
+        "sos_count": len(sos_df),
+        "baseline_mean": mean,
+        "baseline_std": std,
+        "medications": med_adherence,
+    }
+
+# ------------------------------------------------------------
+# 10) توليد تقرير PDF صحي أسبوعي (عربي، بخط مرفق مع الكود)
+# ------------------------------------------------------------
+import os
+from datetime import datetime as _dt
+
+FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
+FONT_REGULAR = os.path.join(FONT_DIR, "FreeSerif.ttf")
+FONT_BOLD = os.path.join(FONT_DIR, "FreeSerifBold.ttf")
+
+def _pdf_fonts_available():
+    return os.path.exists(FONT_REGULAR) and os.path.exists(FONT_BOLD)
+
+def generate_weekly_pdf_report(patient_name: str, report: dict) -> str:
+    """يبني تقرير PDF من صفحة أو صفحتين، ويرجع مسار الملف الناتج."""
+    from PIL import Image, ImageDraw, ImageFont
+    import img2pdf
+
+    DPI = 200
+    PAGE_W, PAGE_H = int(8.27 * DPI), int(11.69 * DPI)
+    MARGIN = 130
+    RIGHT = PAGE_W - MARGIN
+    LEFT = MARGIN
+    CONTENT_W = RIGHT - LEFT
+
+    NAVY = (22, 58, 62); TEAL = (27, 94, 98); CORAL = (213, 87, 68)
+    SAGE = (122, 158, 138); MUTED = (105, 113, 112); DARK = (36, 40, 40)
+    CREAM = (250, 247, 240); CARD = (255, 255, 255); BORDER = (221, 227, 224)
+
+    _font_cache = {}
+    def font(path, size):
+        key = (path, size)
+        if key not in _font_cache:
+            _font_cache[key] = ImageFont.truetype(path, size, layout_engine=ImageFont.Layout.RAQM)
+        return _font_cache[key]
+
+    def wrap(draw, text, f, max_w):
+        words = str(text).split(" ")
+        lines, cur = [], ""
+        for w in words:
+            trial = (cur + " " + w).strip() if cur else w
+            if draw.textlength(trial, font=f, direction="rtl", language="ar") <= max_w or not cur:
+                cur = trial
+            else:
+                lines.append(cur); cur = w
+        if cur: lines.append(cur)
+        return lines
+
+    def draw_para(draw, text, f, top, right, max_w, fill=DARK, lh=None, align="right"):
+        lh = lh or f.size * 1.6
+        y = top
+        for line in wrap(draw, text, f, max_w):
+            if align == "right":
+                draw.text((right, y), line, font=f, fill=fill, direction="rtl", language="ar", anchor="ra")
+            else:
+                draw.text((right - max_w/2, y), line, font=f, fill=fill, direction="rtl", language="ar", anchor="ma")
+            y += lh
+        return y
+
+    pages = []
+
+    # ---------------- الصفحة الأولى ----------------
+    img = Image.new("RGB", (PAGE_W, PAGE_H), CREAM)
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, 0, PAGE_W, 12], fill=TEAL)
+
+    y = 90
+    d.text((RIGHT, y), "التقرير الصحي الأسبوعي", font=font(FONT_BOLD, 34), fill=NAVY,
+            direction="rtl", language="ar", anchor="ra")
+    y += 55
+    d.text((RIGHT, y), "نظام سند — SANAD", font=font(FONT_REGULAR, 16), fill=TEAL,
+            direction="rtl", language="ar", anchor="ra")
+    y += 60
+    d.line([(LEFT, y), (RIGHT, y)], fill=BORDER, width=2)
+    y += 35
+
+    period_start = (_dt.now() - timedelta(days=report["period_days"])).strftime("%Y-%m-%d")
+    period_end = _dt.now().strftime("%Y-%m-%d")
+    d.text((RIGHT, y), f"اسم المريض: {patient_name}", font=font(FONT_BOLD, 20), fill=DARK,
+            direction="rtl", language="ar", anchor="ra")
+    y += 34
+    d.text((RIGHT, y), f"الفترة: من {period_start} إلى {period_end}", font=font(FONT_REGULAR, 16), fill=MUTED,
+            direction="rtl", language="ar", anchor="ra")
+    y += 34
+    d.text((RIGHT, y), f"تاريخ إنشاء التقرير: {_dt.now().strftime('%Y-%m-%d %H:%M')}", font=font(FONT_REGULAR, 13), fill=MUTED,
+            direction="rtl", language="ar", anchor="ra")
+    y += 55
+
+    # ملخص عددي
+    stats = [
+        (str(report["total_readings"]), "إجمالي القراءات", TEAL),
+        (str(report["counts"]["خطر مؤكد"]), "قراءات خطر مؤكد", CORAL),
+        (str(report["counts"]["تنبيه استباقي"]), "تنبيهات استباقية", (191, 149, 79)),
+        (str(report["sos_count"]), "نداءات استغاثة", CORAL),
+    ]
+    gap, n_cols = 22, 4
+    cw = (CONTENT_W - gap * (n_cols - 1)) / n_cols
+    ch = 150
+    for i, (num, label, color) in enumerate(stats):
+        x1 = RIGHT - i * (cw + gap); x0 = x1 - cw
+        d.rounded_rectangle([x0, y, x1, y + ch], 16, fill=CARD, outline=BORDER, width=2)
+        d.text(((x0+x1)/2, y+55), num, font=font(FONT_BOLD, 34), fill=color, anchor="mm")
+        for li, line in enumerate(wrap(d, label, font(FONT_REGULAR, 13), cw-24)):
+            d.text(((x0+x1)/2, y+95+li*20), line, font=font(FONT_REGULAR, 13), fill=DARK,
+                    direction="rtl", language="ar", anchor="ma")
+    y += ch + 45
+
+    if report["baseline_mean"] is not None:
+        lo = round(report["baseline_mean"] - 1.5*report["baseline_std"])
+        hi = round(report["baseline_mean"] + 1.5*report["baseline_std"])
+        d.rounded_rectangle([LEFT, y, RIGHT, y+70], 14, fill=(227, 238, 237), outline=(227, 238, 237))
+        d.text((RIGHT-25, y+35), f"نطاق القراءات الطبيعي الخاص بالمريض: {lo} – {hi} mg/dL", font=font(FONT_BOLD, 16),
+                fill=TEAL, direction="rtl", language="ar", anchor="rm")
+        y += 100
+
+    # رسم بياني للقراءات
+    rdf = report["readings"]
+    if len(rdf) >= 2:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as _plt
+        fig, ax = _plt.subplots(figsize=(7.6, 2.6), dpi=150)
+        xs = range(len(rdf))
+        colors_map = {"طبيعي": "#1B5E62", "تنبيه استباقي": "#D4A017", "خطر مؤكد": "#D5574A"}
+        pc = [colors_map.get(l, "#1B5E62") for l in rdf["smart_level"]]
+        if report["baseline_mean"] is not None:
+            lo = report["baseline_mean"] - 1.5*report["baseline_std"]
+            hi = report["baseline_mean"] + 1.5*report["baseline_std"]
+            ax.axhspan(lo, hi, color="#1B5E62", alpha=0.10)
+        ax.plot(xs, rdf["reading"], color="#163A3E", linewidth=1.3, zorder=1)
+        ax.scatter(xs, rdf["reading"], c=pc, s=45, zorder=2, edgecolors="white", linewidths=0.8)
+        ax.set_ylabel("mg/dL", fontsize=9)
+        ax.set_xticks(list(xs)); ax.set_xticklabels([str(i+1) for i in xs], fontsize=7)
+        ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
+        ax.grid(axis="y", alpha=0.2)
+        fig.tight_layout()
+        chart_path = "/tmp/_sanad_report_chart.png"
+        fig.savefig(chart_path, dpi=150)
+        _plt.close(fig)
+        chart_img = Image.open(chart_path)
+        ratio = CONTENT_W / chart_img.width
+        chart_img = chart_img.resize((int(chart_img.width*ratio), int(chart_img.height*ratio)))
+        img.paste(chart_img, (LEFT, int(y)))
+        y += chart_img.height + 30
+
+    pages.append(img)
+
+    # ---------------- الصفحة الثانية: الوقائع + الأدوية ----------------
+    img2 = Image.new("RGB", (PAGE_W, PAGE_H), CREAM)
+    d2 = ImageDraw.Draw(img2)
+    d2.rectangle([0, 0, PAGE_W, 12], fill=TEAL)
+    y2 = 90
+    d2.text((RIGHT, y2), "الوقائع البارزة خلال الفترة", font=font(FONT_BOLD, 26), fill=NAVY,
+             direction="rtl", language="ar", anchor="ra")
+    y2 += 55
+    d2.line([(LEFT, y2), (RIGHT, y2)], fill=BORDER, width=2)
+    y2 += 30
+
+    if not report["incidents"]:
+        d2.text((RIGHT, y2), "لا توجد وقائع خارجة عن الطبيعي خلال هذه الفترة. الحمد لله.", font=font(FONT_REGULAR, 16),
+                 fill=MUTED, direction="rtl", language="ar", anchor="ra")
+        y2 += 40
+    else:
+        for inc in report["incidents"]:
+            color = CORAL if inc["level"] == "خطر مؤكد" else (191, 149, 79)
+            d2.ellipse([RIGHT-14, y2+6, RIGHT, y2+20], fill=color)
+            line1 = f"{inc['date']} — قراءة {inc['reading']:g} mg/dL ({inc['level']})"
+            d2.text((RIGHT-24, y2), line1, font=font(FONT_BOLD, 15), fill=DARK,
+                     direction="rtl", language="ar", anchor="ra")
+            y2 += 26
+            if inc["reason"]:
+                y2 = draw_para(d2, inc["reason"], font(FONT_REGULAR, 13), y2, RIGHT-24, CONTENT_W-24, fill=MUTED, lh=20)
+            y2 += 18
+
+    y2 += 25
+    d2.line([(LEFT, y2), (RIGHT, y2)], fill=BORDER, width=2)
+    y2 += 35
+    d2.text((RIGHT, y2), "الالتزام بالأدوية", font=font(FONT_BOLD, 24), fill=NAVY,
+             direction="rtl", language="ar", anchor="ra")
+    y2 += 50
+
+    if not report["medications"]:
+        d2.text((RIGHT, y2), "لا توجد أدوية مسجلة بالنظام.", font=font(FONT_REGULAR, 15), fill=MUTED,
+                 direction="rtl", language="ar", anchor="ra")
+    else:
+        for med in report["medications"]:
+            d2.rounded_rectangle([LEFT, y2, RIGHT, y2+60], 12, fill=CARD, outline=BORDER, width=2)
+            d2.text((RIGHT-20, y2+30), f"{med['name']} ({med['dose']}) — {med['time']}", font=font(FONT_BOLD, 15),
+                     fill=DARK, direction="rtl", language="ar", anchor="rm")
+            pct_color = TEAL if med["pct"] >= 70 else (CORAL if med["pct"] < 40 else (191, 149, 79))
+            d2.text((LEFT+20, y2+30), f"{med['pct']}%  ({med['taken']}/{med['scheduled']})", font=font(FONT_BOLD, 16),
+                     fill=pct_color, anchor="lm")
+            y2 += 75
+
+    d2.text((PAGE_W/2, PAGE_H-90), "تم إنشاء هذا التقرير تلقائياً بواسطة نظام سند — لأغراض المتابعة، لا يُغني عن استشارة الطبيب المعالج",
+             font=font(FONT_REGULAR, 12), fill=MUTED, direction="rtl", language="ar", anchor="mm")
+    pages.append(img2)
+
+    out_path = "/tmp/sanad_weekly_report.pdf"
+    tmp_imgs = []
+    for i, p in enumerate(pages):
+        pth = f"/tmp/_sanad_report_page_{i}.png"
+        p.save(pth)
+        tmp_imgs.append(pth)
+    with open(out_path, "wb") as f:
+        f.write(img2pdf.convert(tmp_imgs))
+    return out_path
+
+def send_telegram_document(bot_token: str, chat_id: str, file_path: str, caption: str = ""):
+    if not bot_token or not chat_id:
+        return False, "التوكن أو معرف المحادثة غير مُدخل"
+    url = f"https://api.telegram.org/bot{bot_token}/sendDocument"
+    try:
+        with open(file_path, "rb") as f:
+            resp = requests.post(
+                url,
+                data={"chat_id": chat_id, "caption": caption},
+                files={"document": (os.path.basename(file_path), f, "application/pdf")},
+                timeout=20,
+            )
+        if resp.status_code == 200 and resp.json().get("ok"):
+            return True, None
+        return False, resp.json().get("description", f"HTTP {resp.status_code}")
+    except requests.exceptions.RequestException as e:
+        return False, str(e)
+
+# ------------------------------------------------------------
 # 2) الموقع الجغرافي الحقيقي (GPS من المتصفح)
 #    يتطلب تثبيت الحزمة:  pip install streamlit-js-eval
 #    إذا لم تكن الحزمة مثبتة أو رفض المستخدم إذن الموقع،
@@ -715,6 +1035,50 @@ else:
             if st.button("حذف", key=f"del_{med['id']}"):
                 delete_medication(med["id"])
                 st.rerun()
+
+st.markdown("---")
+
+# ------------------------------------------------------------
+# واجهة التقرير الصحي الأسبوعي
+# ------------------------------------------------------------
+st.markdown("### 📄 التقرير الصحي الأسبوعي")
+
+patient_name = st.text_input(
+    "اسم المريض (يظهر بالتقرير)",
+    value=get_setting("patient_name", ""),
+    placeholder="مثال: عبدالله العضياني",
+)
+if patient_name and patient_name != get_setting("patient_name", ""):
+    set_setting("patient_name", patient_name)
+
+if not _pdf_fonts_available():
+    st.error("⚠️ ملفات الخط المطلوبة (fonts/FreeSerif.ttf و fonts/FreeSerifBold.ttf) غير موجودة بجانب app.py — أضفها أولاً لتفعيل هذه الميزة.")
+else:
+    if st.button("📄 توليد التقرير الأسبوعي الآن", use_container_width=True):
+        if not patient_name.strip():
+            st.error("الرجاء إدخال اسم المريض أولاً.")
+        else:
+            with st.spinner("جاري إنشاء التقرير..."):
+                report_data = get_weekly_report_data(days=7)
+                pdf_path = generate_weekly_pdf_report(patient_name.strip(), report_data)
+            st.success("✅ تم إنشاء التقرير بنجاح.")
+
+            with open(pdf_path, "rb") as f:
+                pdf_bytes = f.read()
+            st.download_button(
+                "⬇️ تنزيل التقرير (PDF)", data=pdf_bytes,
+                file_name=f"sanad_weekly_report_{datetime.now().strftime('%Y%m%d')}.pdf",
+                mime="application/pdf", use_container_width=True,
+            )
+
+            tg_ok, tg_err = send_telegram_document(
+                telegram_token, telegram_chat_id, pdf_path,
+                caption=f"📄 التقرير الصحي الأسبوعي — {patient_name}"
+            )
+            if tg_ok:
+                st.success("✅ تم إرسال التقرير تلقائياً عبر تيليجرام.")
+            else:
+                st.warning(f"⚠️ لم يُرسل التقرير عبر تيليجرام: {tg_err}\n\nيمكنك تنزيله يدوياً من الزر أعلاه.")
 
 # ------------------------------------------------------------
 # السجل التفصيلي (مطوي افتراضياً - للاطلاع التقني فقط)

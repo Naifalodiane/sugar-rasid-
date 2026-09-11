@@ -3,3 +3,5 @@ pandas
 streamlit-js-eval
 requests
 matplotlib
+Pillow
+img2pdf

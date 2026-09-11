@@ -136,18 +136,21 @@ def init_db():
         conn.execute("ALTER TABLE logs ADD COLUMN smart_level TEXT DEFAULT 'طبيعي'")
     if "smart_reason" not in existing_cols:
         conn.execute("ALTER TABLE logs ADD COLUMN smart_reason TEXT DEFAULT ''")
+    if "is_demo" not in existing_cols:
+        conn.execute("ALTER TABLE logs ADD COLUMN is_demo INTEGER DEFAULT 0")
     conn.commit()
     conn.close()
 
 def insert_log(row: dict):
     row.setdefault("smart_level", row.get("system_class", ""))
     row.setdefault("smart_reason", "")
+    row.setdefault("is_demo", 0)
     conn = get_conn()
     conn.execute("""
         INSERT INTO logs (test_id, reading, true_state, system_class, alert_sent,
-                           processed_at, alert_ms, accuracy, event_type, smart_level, smart_reason)
+                           processed_at, alert_ms, accuracy, event_type, smart_level, smart_reason, is_demo)
         VALUES (:test_id, :reading, :true_state, :system_class, :alert_sent,
-                :processed_at, :alert_ms, :accuracy, :event_type, :smart_level, :smart_reason)
+                :processed_at, :alert_ms, :accuracy, :event_type, :smart_level, :smart_reason, :is_demo)
     """, row)
     conn.commit()
     conn.close()
@@ -326,14 +329,21 @@ def init_medications_db():
             reminder_sent INTEGER DEFAULT 0
         )
     """)
+    # ترحيل آمن: علامة البيانات التجريبية
+    med_cols = {row[1] for row in conn.execute("PRAGMA table_info(medications)").fetchall()}
+    if "is_demo" not in med_cols:
+        conn.execute("ALTER TABLE medications ADD COLUMN is_demo INTEGER DEFAULT 0")
+    medlog_cols = {row[1] for row in conn.execute("PRAGMA table_info(medication_logs)").fetchall()}
+    if "is_demo" not in medlog_cols:
+        conn.execute("ALTER TABLE medication_logs ADD COLUMN is_demo INTEGER DEFAULT 0")
     conn.commit()
     conn.close()
 
-def add_medication(name, dose, time_str):
+def add_medication(name, dose, time_str, is_demo=0):
     conn = get_conn()
     conn.execute(
-        "INSERT INTO medications (name, dose, time_of_day, created_at) VALUES (?, ?, ?, ?)",
-        (name, dose, time_str, datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        "INSERT INTO medications (name, dose, time_of_day, created_at, is_demo) VALUES (?, ?, ?, ?, ?)",
+        (name, dose, time_str, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), is_demo)
     )
     conn.commit()
     conn.close()
@@ -353,11 +363,13 @@ def delete_medication(med_id):
     conn.close()
 
 def get_or_create_today_log(med_id):
+    """يرجع دائماً 5 قيم بالضبط بغض النظر عن أي أعمدة إضافية بالجدول مستقبلاً."""
     med_id = int(med_id)
     today = datetime.now().strftime("%Y-%m-%d")
+    cols = "id, medication_id, log_date, taken_at, reminder_sent"
     conn = get_conn()
     row = conn.execute(
-        "SELECT * FROM medication_logs WHERE medication_id = ? AND log_date = ?",
+        f"SELECT {cols} FROM medication_logs WHERE medication_id = ? AND log_date = ?",
         (med_id, today)
     ).fetchone()
     if row is None:
@@ -367,7 +379,7 @@ def get_or_create_today_log(med_id):
         )
         conn.commit()
         row = conn.execute(
-            "SELECT * FROM medication_logs WHERE medication_id = ? AND log_date = ?",
+            f"SELECT {cols} FROM medication_logs WHERE medication_id = ? AND log_date = ?",
             (med_id, today)
         ).fetchone()
     conn.close()
@@ -393,11 +405,14 @@ def mark_reminder_sent(log_id):
 MED_GRACE_MINUTES = 60  # مهلة السماح قبل اعتبار الجرعة متأخرة
 
 def check_overdue_and_alert(telegram_token, telegram_chat_id, location_str):
-    """يفحص كل أدوية اليوم، ولو تجاوزت موعدها + المهلة بدون تسجيل أخذ، يرسل تنبيه تلقائي مرة واحدة."""
+    """يفحص كل أدوية اليوم، ولو تجاوزت موعدها + المهلة بدون تسجيل أخذ، يرسل تنبيه تلقائي مرة واحدة.
+    يتجاهل الأدوية التجريبية تماماً (حماية إضافية من إرسال تنبيهات وهمية)."""
     meds = get_medications()
     now = datetime.now()
     alerts_sent = []
     for _, med in meds.iterrows():
+        if int(med.get("is_demo", 0) or 0) == 1:
+            continue
         log = get_or_create_today_log(med["id"])
         log_id, _, _, taken_at, reminder_sent = log
         if taken_at is not None or reminder_sent:
@@ -446,6 +461,102 @@ def set_setting(key, value):
     conn.close()
 
 init_settings_db()
+
+# ------------------------------------------------------------
+# 9) وضع العرض التجريبي (Demo Mode)
+#    يعبّي بيانات واقعية بالماضي فقط لعرض الرسم البياني والتقرير
+#    فوراً أمام اللجنة - بدون إرسال أي تنبيهات تيليجرام حقيقية،
+#    لأنه يكتب مباشرة بقاعدة البيانات (نفس آلية insert_log العادية)
+#    ولا يمر إطلاقاً على دوال الإرسال.
+# ------------------------------------------------------------
+def has_demo_data():
+    conn = get_conn()
+    n1 = conn.execute("SELECT COUNT(*) FROM logs WHERE is_demo = 1").fetchone()[0]
+    conn.close()
+    return n1 > 0
+
+def generate_demo_data():
+    """يبني تاريخاً واقعياً لآخر 12 يوماً: قراءات متنوعة، نداء SOS واحد، والتزام أدوية جزئي.
+    كل القراءات بتواريخ ماضية (اليوم الحالي يبقى فاضياً) عشان ما يتعارض مع فحص
+    التذكير الفوري، وكل الإدراج مباشر بقاعدة البيانات بدون استدعاء أي دالة إرسال."""
+    now = datetime.now()
+
+    # -------- 12 قراءة سكر موزعة على آخر 12 يوماً (نمط واقعي فيه تدرج وخطر) --------
+    demo_readings = [
+        (12, 119, "طبيعي", ""),
+        (11, 122, "طبيعي", ""),
+        (10, 117, "طبيعي", ""),
+        (9,  130, "طبيعي", ""),
+        (8,  115, "طبيعي", ""),
+        (7,  98,  "تنبيه استباقي", "خارج نطاقك الشخصي المعتاد و اتجاه انخفاض ملحوظ بآخر القراءات"),
+        (6,  88,  "تنبيه استباقي", "اتجاه انخفاض متتالي وملحوظ بآخر القراءات"),
+        (5,  210, "خطر مؤكد", "القراءة 210 خارج الحدود الطبية الثابتة (ارتفاع)."),
+        (4,  128, "طبيعي", ""),
+        (3,  121, "طبيعي", ""),
+        (2,  60,  "خطر مؤكد", "القراءة 60 خارج الحدود الطبية الثابتة (انخفاض)."),
+        (1,  118, "طبيعي", ""),
+    ]
+    for days_ago, reading, level, reason in demo_readings:
+        dt = now - timedelta(days=days_ago, hours=int(now.hour * 0.3))
+        fixed_class = "طبيعي" if level == "طبيعي" else ("ارتفاع" if reading > 180 else "انخفاض")
+        insert_log({
+            "test_id": next_test_id(),
+            "reading": reading,
+            "true_state": fixed_class,
+            "system_class": fixed_class,
+            "alert_sent": "نعم" if level != "طبيعي" else "لا",
+            "processed_at": dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "alert_ms": 45.0,
+            "accuracy": "صحيح",
+            "event_type": "قراءة سكر",
+            "smart_level": level,
+            "smart_reason": reason,
+            "is_demo": 1,
+        })
+
+    # -------- نداء استغاثة واحد قبل 5 أيام --------
+    insert_log({
+        "test_id": next_test_id(), "reading": None, "true_state": "-",
+        "system_class": "فزعة يدوية", "alert_sent": "نعم",
+        "processed_at": (now - timedelta(days=5, hours=2)).strftime("%Y-%m-%d %H:%M:%S"),
+        "alert_ms": None, "accuracy": "-", "event_type": "زر SOS",
+        "smart_level": "فزعة يدوية", "smart_reason": "", "is_demo": 1,
+    })
+
+    # -------- دواءان تجريبيان بالتزام جزئي واقعي لآخر 10 أيام --------
+    demo_meds = [("دواء السكر (تجريبي)", "حبة واحدة", "08:00"), ("دواء الضغط (تجريبي)", "نصف حبة", "20:00")]
+    conn = get_conn()
+    for name, dose, time_str in demo_meds:
+        conn.execute(
+            "INSERT INTO medications (name, dose, time_of_day, created_at, is_demo) VALUES (?, ?, ?, ?, 1)",
+            (name, dose, time_str, now.strftime("%Y-%m-%d %H:%M:%S"))
+        )
+        med_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        for days_ago in range(10, 0, -1):  # آخر 10 أيام، اليوم الحالي غير مشمول
+            log_date = (now - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+            taken = days_ago % 3 != 0  # حوالي 70% التزام
+            taken_at = (now - timedelta(days=days_ago, hours=-1)).strftime("%Y-%m-%d %H:%M:%S") if taken else None
+            conn.execute(
+                "INSERT INTO medication_logs (medication_id, log_date, taken_at, reminder_sent, is_demo) VALUES (?, ?, ?, 0, 1)",
+                (med_id, log_date, taken_at)
+            )
+        # سجل اليوم الحالي: نضعه "مأخوذ" مسبقاً حتى لا يفعّل فحص التذكير الفوري تنبيهاً حقيقياً
+        today_str = now.strftime("%Y-%m-%d")
+        conn.execute(
+            "INSERT INTO medication_logs (medication_id, log_date, taken_at, reminder_sent, is_demo) VALUES (?, ?, ?, 0, 1)",
+            (med_id, today_str, now.strftime("%Y-%m-%d %H:%M:%S"))
+        )
+    conn.commit()
+    conn.close()
+
+def clear_demo_data():
+    """يحذف كل البيانات التجريبية فقط، ولا يمس أي بيانات حقيقية أدخلها المستخدم."""
+    conn = get_conn()
+    conn.execute("DELETE FROM logs WHERE is_demo = 1")
+    conn.execute("DELETE FROM medication_logs WHERE is_demo = 1")
+    conn.execute("DELETE FROM medications WHERE is_demo = 1")
+    conn.commit()
+    conn.close()
 
 # ------------------------------------------------------------
 # 9) تجميع بيانات التقرير الصحي الأسبوعي
@@ -850,6 +961,24 @@ if role == "father":
     # ------------------------------------------------------------
     # الشريط الجانبي (متاح للأب فقط - إعدادات وتحكم)
     # ------------------------------------------------------------
+    with st.sidebar.expander("🎬 وضع العرض التجريبي (Demo)", expanded=False):
+        st.caption(
+            "يعبّي النظام ببيانات واقعية لآخر 12 يوماً (قراءات متنوعة، نداء استغاثة، "
+            "والتزام أدوية) عشان يظهر الرسم البياني والتقرير فوراً أمام اللجنة."
+        )
+        st.warning("⚠️ بيانات تجريبية فقط لأغراض العرض — لا تُرسل أي تنبيهات تيليجرام حقيقية أثناء التحميل.")
+        if has_demo_data():
+            st.info("📊 يوجد بيانات تجريبية محمّلة حالياً.")
+            if st.button("🗑️ حذف البيانات التجريبية (رجوع للوضع الطبيعي)", use_container_width=True):
+                clear_demo_data()
+                st.success("تم حذف البيانات التجريبية. النظام رجع لوضعه الطبيعي.")
+                st.rerun()
+        else:
+            if st.button("📊 تحميل بيانات تجريبية للعرض", use_container_width=True):
+                generate_demo_data()
+                st.success("تم تحميل البيانات التجريبية بنجاح.")
+                st.rerun()
+
     st.sidebar.subheader("⚙️ إعدادات الطوارئ والاتصال")
     target_phone = st.sidebar.text_input("رقم طوارئ الابن (واتساب - احتياطي يدوي)", value="966500000000")
 

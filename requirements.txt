@@ -5,3 +5,5 @@ requests
 matplotlib
 Pillow
 img2pdf
+arabic-reshaper
+python-bidi
